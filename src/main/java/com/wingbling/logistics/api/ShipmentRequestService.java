@@ -33,6 +33,13 @@ public class ShipmentRequestService {
         r.setSku(dto.sku());
         if (dto.scope() != null) r.setScope(dto.scope());
         r.setAssignee(dto.assignee());
+        r.setChannels(dto.channels());
+        r.setProductsJson(dto.productsJson());
+        r.setReceiverName(dto.receiverName());
+        r.setReceiverPhone(dto.receiverPhone());
+        r.setReceiverAddress(dto.receiverAddress());
+        r.setReceiverMessage(dto.receiverMessage());
+        r.setBillingType(dto.billingType());
         return repo.save(r);
     }
 

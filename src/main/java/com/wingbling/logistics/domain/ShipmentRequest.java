@@ -85,6 +85,28 @@ public class ShipmentRequest {
     @Column(name = "stock_checked_at")
     private LocalDateTime stockCheckedAt;
 
+    @Column(name = "channels", columnDefinition = "text")
+    private String channels;
+
+    @Column(name = "products_json", columnDefinition = "text")
+    private String productsJson;
+
+    @Column(name = "receiver_name", length = 50)
+    private String receiverName;
+
+    @Column(name = "receiver_phone", length = 30)
+    private String receiverPhone;
+
+    @Column(name = "receiver_address", length = 200)
+    private String receiverAddress;
+
+    @Column(name = "receiver_message", length = 200)
+    private String receiverMessage;
+
+    /** paid(유상) | free(무상) */
+    @Column(name = "billing_type", length = 10)
+    private String billingType;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -92,7 +114,7 @@ public class ShipmentRequest {
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public static ShipmentRequest create(String srNo, String requestTeam, String requester,
-                                          String itemName, Integer quantity, LocalDate wantDate) {
+                                         String itemName, Integer quantity, LocalDate wantDate) {
         ShipmentRequest r = new ShipmentRequest();
         r.srNo = srNo;
         r.requestTeam = requestTeam;

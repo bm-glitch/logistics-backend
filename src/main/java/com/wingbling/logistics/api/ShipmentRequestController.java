@@ -35,6 +35,12 @@ public class ShipmentRequestController {
         return rows.stream().map(RequestView::from).toList();
     }
 
+    /** 팀원의 "업무 요청 대장부" 화면 전용 — REQUESTS 배열과 같은 필드 구조로 응답 */
+    @GetMapping("/ledger")
+    public List<LedgerView> ledger() {
+        return repo.findAll().stream().map(LedgerView::from).toList();
+    }
+
     @PatchMapping("/{sr}/status")
     public RequestView updateStatus(@PathVariable String sr, @RequestBody StatusUpdateDto body) {
         return RequestView.from(service.updateStatus(sr, body.status()));

@@ -14,13 +14,22 @@ import java.time.LocalDate;
 public record CreateRequestDto(
         @NotBlank String requestTeam,     // 요청팀
         @NotBlank String requester,       // 요청자
-        @NotBlank String itemName,        // 품목
+        @NotBlank String itemName,        // 품목 (대표 상품명 — 목록 첫 상품 또는 요약)
         String optionValue,               // 옵션 (색상/사이즈) — 선택
-        @NotNull @Positive Integer quantity, // 수량
+        @NotNull @Positive Integer quantity, // 수량 (총 수량)
         @NotNull LocalDate wantDate,       // 출고 희망일
         String receivePlace,               // 수령처
         String note,                       // 비고
         String sku,                        // 상품코드 (이지어드민 매칭용) — 선택
         String scope,                       // "team" | "person" — 미지정시 team
-        String assignee                     // scope=person일 때 담당자명
+        String assignee,                    // scope=person일 때 담당자명
+
+        // 팀원 요청서 폼 통합 필드
+        String channels,                    // 판매처, 쉼표구분 문자열
+        String productsJson,                // 상품 여러 줄 JSON 문자열
+        String receiverName,
+        String receiverPhone,
+        String receiverAddress,
+        String receiverMessage,
+        String billingType                  // "paid" | "free"
 ) {}
