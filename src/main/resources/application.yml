@@ -1,0 +1,21 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  datasource:
+    # Railway가 주는 DATABASE_URL은 postgres://user:pass@host:port/db 형태라
+    # Spring이 바로 못 읽어서 JDBC 형식으로 변환해서 env로 넘겨줄 거야 (README 참고).
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/logistics}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: none      # 스키마는 schema.sql로 직접 관리 (자동생성 금지 — 운영 DB 안전)
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+logging:
+  level:
+    com.wingbling.logistics: INFO
