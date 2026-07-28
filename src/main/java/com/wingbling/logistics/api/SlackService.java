@@ -28,6 +28,13 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 
+/**
+ * Slack 연동 담당.
+ *  - 요청이 진짜 Slack에서 온 것인지 서명 검증
+ *  - 봇이 태그되면 "요청서 작성" 버튼 답글 보내기
+ *  - 버튼 누르면 입력 폼(모달) 띄우기
+ *  - 폼 제출되면 우리 DB에 저장
+ */
 @Service
 @RequiredArgsConstructor
 public class SlackService {
@@ -36,6 +43,7 @@ public class SlackService {
     private static final String SLACK_API = "https://slack.com/api/";
 
     private final ShipmentRequestService shipmentRequestService;
+    private final EzAdminService ezAdminService;
     private final ObjectMapper om = new ObjectMapper();
 
     private final HttpClient http = HttpClient.newBuilder()
@@ -48,6 +56,14 @@ public class SlackService {
     @Value("${slack.signing-secret:}")
     private String signingSecret;
 
+    // ------------------------------------------------------------------
+    // 1) 서명 검증 — 이 요청이 정말 Slack에서 온 것인지 확인
+    // ------------------------------------------------------------------
+
+    /**
+     * Signing Secret이 설정되지 않았으면 검증을 건너뜁니다(초기 연결 테스트용).
+     * 운영에서는 반드시 SLACK_SIGNING_SECRET 환경변수를 넣어 주세요.
+     */
     public boolean verify(String timestamp, String signature, String rawBody) {
         if (signingSecret == null || signingSecret.isBlank()) {
             log.warn("[Slack] SIGNING_SECRET 미설정 — 서명 검증을 건너뜁니다.");
@@ -55,6 +71,7 @@ public class SlackService {
         }
         if (timestamp == null || signature == null) return false;
 
+        // 5분보다 오래된 요청은 거부 (재전송 공격 방지)
         try {
             long age = Math.abs(System.currentTimeMillis() / 1000 - Long.parseLong(timestamp));
             if (age > 300) return false;
@@ -82,6 +99,10 @@ public class SlackService {
         for (int i = 0; i < a.length(); i++) diff |= a.charAt(i) ^ b.charAt(i);
         return diff == 0;
     }
+
+    // ------------------------------------------------------------------
+    // 2) 봇이 태그되면 버튼 답글 보내기
+    // ------------------------------------------------------------------
 
     public void handleAppMention(JsonNode event) {
         String channel = text(event, "channel");
@@ -118,6 +139,11 @@ public class SlackService {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 3) 버튼 클릭 → 입력 폼(모달) 열기
+    // ------------------------------------------------------------------
+
+    /** trigger_id는 3초 안에 써야 하므로 즉시 호출합니다. */
     public void openRequestModal(String triggerId, String channelId) {
         String view = MODAL_VIEW.replace("__CHANNEL__", channelId == null ? "" : channelId);
         try {
@@ -166,7 +192,7 @@ public class SlackService {
                 {"type":"divider"},
 
                 {"type":"section","text":{"type":"mrkdwn","text":
-                  "*발주서를 올리면 아래 품목·수령정보가 자동으로 채워집니다.*\\n올리지 않으면 직접 입력해 주세요."}},
+                  "*발주서를 올리면 아래 품목·수령정보가 자동으로 채워집니다.*\n올리지 않으면 직접 입력해 주세요."}},
 
                 {"type":"input","block_id":"b_order_file","optional":true,
                  "label":{"type":"plain_text","text":"📎 발주서 업로드 (.xls/.xlsx)"},
@@ -182,6 +208,11 @@ public class SlackService {
                  "label":{"type":"plain_text","text":"수량 (발주서 없을 때만 입력)"},
                  "element":{"type":"number_input","action_id":"a_qty","is_decimal_allowed":false,
                    "min_value":"1"}},
+
+                {"type":"input","block_id":"b_sku","optional":true,
+                 "label":{"type":"plain_text","text":"상품코드 (선택 — 입력하면 실시간 가용재고를 알려드려요)"},
+                 "element":{"type":"plain_text_input","action_id":"a_sku",
+                   "placeholder":{"type":"plain_text","text":"예: S00011"}}},
 
                 {"type":"divider"},
 
@@ -213,16 +244,19 @@ public class SlackService {
             }
             """;
 
-    public void handleViewSubmission(JsonNode payload) {
-        // 이 메서드는 아래 handleViewSubmissionSync로 대체되었습니다.
-    }
+    // ------------------------------------------------------------------
+    // 4) 폼 제출 → 우리 DB에 저장
+    // ------------------------------------------------------------------
 
+    /** 발주서에서 읽어낸 상품 한 줄 */
     private record ProductLine(String name, String option, int qty) {}
 
+    /** 발주서에서 읽어낸 전체 내용 */
     private record ParsedOrder(String receiverName, String receiverPhone,
                                String receiverAddress, String receiverMessage,
                                List<ProductLine> products) {}
 
+    // 발주서(웹화면에서 쓰는 것과 같은 표준 양식) 컬럼명. 순서 무관, 이름으로 찾습니다.
     private static final String[] COL_ITEM = {"상품명"};
     private static final String[] COL_OPT  = {"옵션"};
     private static final String[] COL_QTY  = {"수량"};
@@ -232,6 +266,10 @@ public class SlackService {
     private static final String[] COL_RADDR = {"수령자주소", "수령자 주소"};
     private static final String[] COL_RMSG = {"배송메세지", "배송메시지", "배송 메세지"};
 
+    /**
+     * Slack이 보관 중인 발주서 파일을 다운로드해서 읽습니다.
+     * url_private은 봇 토큰으로 인증해야만 내려받을 수 있습니다.
+     */
     private ParsedOrder downloadAndParseOrderFile(String urlPrivate) throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(urlPrivate))
@@ -265,7 +303,7 @@ public class SlackService {
                 Row row = sheet.getRow(r);
                 if (row == null) continue;
                 String name = cellText(row, idxItem);
-                if (name.isBlank()) continue;
+                if (name.isBlank()) continue; // 발주서 하단의 빈 서식 줄은 건너뜀
 
                 String opt = cellText(row, idxOpt);
                 int qty = 1;
@@ -315,6 +353,10 @@ public class SlackService {
         };
     }
 
+    /**
+     * 모달 제출 처리. Slack은 이 응답을 3초 안에 받아야 하므로 동기로 실행합니다.
+     * 반환값이 빈 문자열이면 정상 접수(모달 닫힘), 아니면 Slack이 보여줄 오류 JSON입니다.
+     */
     public String handleViewSubmissionSync(JsonNode payload) {
         JsonNode values = payload.path("view").path("state").path("values");
         String channel = payload.path("view").path("private_metadata").asText("");
@@ -333,6 +375,7 @@ public class SlackService {
         String manualRPhone = values.path("b_rcv_phone").path("a_rcv_phone").path("value").asText("");
         String manualRAddr  = values.path("b_rcv_address").path("a_rcv_address").path("value").asText("");
         String manualRMsg   = values.path("b_rcv_message").path("a_rcv_message").path("value").asText("");
+        String sku          = values.path("b_sku").path("a_sku").path("value").asText("").trim();
 
         JsonNode files = values.path("b_order_file").path("a_order_file").path("files");
         boolean hasFile = files.isArray() && files.size() > 0;
@@ -355,6 +398,7 @@ public class SlackService {
                         "발주서를 읽지 못했습니다 (" + e.getMessage() + "). 직접 입력해 주세요.");
             }
         } else {
+            // 파일이 없으면 직접 입력한 값으로 진행 — 필수 항목 검증
             if (manualItem.isBlank()) return errorJson("b_item", "발주서가 없으면 품목을 입력해 주세요.");
             int qty;
             try { qty = Math.max(1, Integer.parseInt(manualQtyRaw.trim())); }
@@ -394,8 +438,8 @@ public class SlackService {
         try {
             var saved = shipmentRequestService.create(new CreateRequestDto(
                     team, requester, itemName, null, totalQty, wantDate,
-                    rAddr, note.isBlank() ? null : note, null, "team",
-                    null,
+                    rAddr, note.isBlank() ? null : note, sku.isBlank() ? null : sku, "team",
+                    null,                          // 담당자(물류팀)는 접수 후 지정
                     null, productsJson,
                     rName, rPhone, rAddr, rMsg.isBlank() ? null : rMsg,
                     billing
@@ -406,38 +450,77 @@ public class SlackService {
             return errorJson("b_team", "저장에 실패했습니다. 잠시 후 다시 시도해 주세요.");
         }
 
+        // 접수 완료 메시지는 응답을 막지 않도록 비동기로 전송
         final String finalSrNo = srNo;
         final int finalQty = totalQty;
         final LocalDate finalDate = wantDate;
-        final List<ProductLine> finalProducts = products;
+        final String finalSku = sku;
         if (!channel.isBlank()) {
             async(() -> {
-                String blocks = ("""
-                        [
-                          {"type":"section","text":{"type":"mrkdwn","text":
-                            "*SR_NO* 출고 요청이 접수되었습니다. :white_check_mark:"}},
-                          {"type":"section","fields":[
-                            {"type":"mrkdwn","text":"*요청팀*\\nTEAM"},
-                            {"type":"mrkdwn","text":"*요청자*\\nREQUESTER"},
-                            {"type":"mrkdwn","text":"*품목*\\nITEM"},
-                            {"type":"mrkdwn","text":"*수량*\\nQTY"},
-                            {"type":"mrkdwn","text":"*출고 희망일*\\nWANT"},
-                            {"type":"mrkdwn","text":"*구분*\\nBILLING"}
-                          ]}
-                        ]
-                        """)
-                        .replace("SR_NO", finalSrNo)
-                        .replace("TEAM", esc(team))
-                        .replace("REQUESTER", esc(requester))
-                        .replace("ITEM", esc(itemName) + (finalProducts.size() > 1 ? " 외 " + (finalProducts.size()-1) + "건" : ""))
-                        .replace("QTY", String.valueOf(finalQty))
-                        .replace("WANT", finalDate.toString())
-                        .replace("BILLING", "paid".equals(billing) ? "유상" : "무상");
-                postMessage(channel, null, finalSrNo + " 출고 요청이 접수되었습니다.", blocks);
+                // 상품코드를 입력했으면 이지어드민에서 실시간 가용재고를 조회해 같이 보여줍니다.
+                // 조회 실패해도 접수 메시지 자체는 정상 발송합니다 (재고 표시는 부가 정보).
+                String stockLine = "";
+                if (!finalSku.isBlank()) {
+                    try {
+                        var stock = ezAdminService.lookup(List.of(finalSku));
+                        var line = stock.get(finalSku);
+                        if (line != null) {
+                            stockLine = line.available() != null
+                                    ? String.format("*가용재고*\\n%d개 (현재고 %d)", line.available(), line.stock())
+                                    : String.format("*현재고*\\n%d개", line.stock());
+                        } else {
+                            stockLine = "*재고조회*\\n이지어드민에 없는 코드입니다";
+                        }
+                    } catch (Exception e) {
+                        log.error("[Slack] 재고조회 실패", e);
+                    }
+                }
+
+                try {
+                    var fields = om.createArrayNode();
+                    fields.add(field("요청팀", esc(team)));
+                    fields.add(field("요청자", esc(requester)));
+                    fields.add(field("품목", esc(itemName) + (products.size() > 1 ? " 외 " + (products.size() - 1) + "건" : "")));
+                    fields.add(field("수량", String.valueOf(finalQty)));
+                    fields.add(field("출고 희망일", finalDate.toString()));
+                    fields.add(field("구분", "paid".equals(billing) ? "유상" : "무상"));
+                    if (!stockLine.isBlank()) {
+                        var f = om.createObjectNode();
+                        f.put("type", "mrkdwn");
+                        f.put("text", stockLine.replace("\\n", "\n"));
+                        fields.add(f);
+                    }
+
+                    var section1 = om.createObjectNode();
+                    section1.put("type", "section");
+                    var text1 = om.createObjectNode();
+                    text1.put("type", "mrkdwn");
+                    text1.put("text", "*" + finalSrNo + "* 출고 요청이 접수되었습니다. :white_check_mark:");
+                    section1.set("text", text1);
+
+                    var section2 = om.createObjectNode();
+                    section2.put("type", "section");
+                    section2.set("fields", fields);
+
+                    var blocksArr = om.createArrayNode();
+                    blocksArr.add(section1);
+                    blocksArr.add(section2);
+
+                    postMessage(channel, null, finalSrNo + " 출고 요청이 접수되었습니다.", om.writeValueAsString(blocksArr));
+                } catch (Exception e) {
+                    log.error("[Slack] 접수 확인 메시지 생성 실패", e);
+                }
             });
         }
         log.info("[Slack] {} 접수 완료 (제출자: {}, 발주서 사용: {})", srNo, userName, hasFile);
-        return "";
+        return ""; // 빈 문자열 = 정상, 모달 닫힘
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode field(String label, String value) {
+        var f = om.createObjectNode();
+        f.put("type", "mrkdwn");
+        f.put("text", "*" + label + "*\n" + value);
+        return f;
     }
 
     private String errorJson(String blockId, String message) {
@@ -453,11 +536,16 @@ public class SlackService {
         }
     }
 
+    /** JSON 문자열 안에서 깨지지 않도록 최소한만 이스케이프 */
     private String esc(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", " ").replace("\r", " ");
     }
+
+    // ------------------------------------------------------------------
+    // 공통: Slack Web API 호출
+    // ------------------------------------------------------------------
 
     private void call(String method, String jsonBody) {
         if (botToken == null || botToken.isBlank()) {
@@ -483,6 +571,7 @@ public class SlackService {
         }
     }
 
+    /** Slack은 3초 안에 응답을 요구하므로, 오래 걸리는 일은 따로 돌립니다. */
     public void async(Runnable task) {
         CompletableFuture.runAsync(task).exceptionally(e -> {
             log.error("[Slack] 비동기 처리 오류", e);
