@@ -192,7 +192,7 @@ public class SlackService {
                 {"type":"divider"},
 
                 {"type":"section","text":{"type":"mrkdwn","text":
-                  "*발주서를 올리면 아래 품목·수령정보가 자동으로 채워집니다.*\n올리지 않으면 직접 입력해 주세요."}},
+                  "*발주서를 올리면 아래 품목·수령정보가 자동으로 채워집니다.*\\n올리지 않으면 직접 입력해 주세요."}},
 
                 {"type":"input","block_id":"b_order_file","optional":true,
                  "label":{"type":"plain_text","text":"📎 발주서 업로드 (.xls/.xlsx)"},
