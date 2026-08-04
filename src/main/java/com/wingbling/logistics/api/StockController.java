@@ -2,6 +2,7 @@ package com.wingbling.logistics.api;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -39,5 +40,37 @@ public class StockController {
             body.put(code, row);
         });
         return body;
+    }
+
+    /**
+     * 상품코드/상품명/바코드로 찾는 검색창 전용.
+     * 예시: GET /api/stock/search?q=주얼패치
+     * 응답: [{"productId":"S51348","name":"...","stock":1174,"available":1154}, ...]
+     * (이지어드민은 상품명 부분검색을 지원하지 않아, 전체 목록을 캐싱해두고 여기서 직접 찾습니다.)
+     */
+    @GetMapping("/search")
+    public List<Map<String, Object>> search(@RequestParam String q) {
+        var candidates = ezAdminService.searchCatalog(q);
+        if (candidates.isEmpty()) return List.of();
+
+        var codes = candidates.stream().map(EzAdminService.CatalogEntry::productId).toList();
+        var stock = ezAdminService.lookup(codes);
+
+        return candidates.stream().map(c -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("productId", c.productId());
+            row.put("name", c.name());
+            var s = stock.get(c.productId());
+            row.put("stock", s == null ? null : s.stock());
+            row.put("available", s == null ? null : s.available());
+            return row;
+        }).toList();
+    }
+
+    /** 검색창 옆 '새로고침' 버튼 — 20분 기다리지 않고 지금 바로 상품 목록을 다시 받아옵니다. */
+    @PostMapping("/refresh")
+    public Map<String, Object> refresh() {
+        int count = ezAdminService.forceRefreshCatalog();
+        return Map.of("count", count);
     }
 }

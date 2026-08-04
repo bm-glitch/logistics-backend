@@ -31,5 +31,9 @@ public record CreateRequestDto(
         String receiverPhone,
         String receiverAddress,
         String receiverMessage,
-        String billingType                  // "paid" | "free"
+        String billingType,                  // "paid" | "free"
+
+        // Slack에서 접수된 경우, 나중에 알림 보낼 때 씀 — 없으면 null (웹에서 온 요청)
+        String slackChannelId,
+        String slackUserId
 ) {}

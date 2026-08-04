@@ -15,6 +15,7 @@ public class ShipmentRequestController {
 
     private final ShipmentRequestService service;
     private final ShipmentRequestRepository repo;
+    private final SlackService slackService;
 
     /**
      * 접수 창구. 지금은 Postman/curl로 수동 테스트.
@@ -41,6 +42,15 @@ public class ShipmentRequestController {
         return repo.findAll().stream().map(LedgerView::from).toList();
     }
 
+    /** "물류 대장" 화면 전용 — 취소된 건은 물류팀이 처리할 게 없으니 제외 */
+    @GetMapping("/logistics-view")
+    public List<LogisticsRowView> logisticsView() {
+        return repo.findAll().stream()
+                .filter(r -> !"취소".equals(r.getStatus()))
+                .map(LogisticsRowView::from)
+                .toList();
+    }
+
     @PatchMapping("/{sr}/status")
     public RequestView updateStatus(@PathVariable String sr, @RequestBody StatusUpdateDto body) {
         return RequestView.from(service.updateStatus(sr, body.status()));
@@ -53,9 +63,64 @@ public class ShipmentRequestController {
 
     @PostMapping("/{sr}/notify")
     public RequestView notify(@PathVariable String sr) {
-        // TODO(내일): 여기서 실제 Slack DM 발송 호출 붙이기
-        return RequestView.from(service.markNotified(sr));
+        ShipmentRequest r = service.markNotified(sr);
+        if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
+            slackService.async(() -> slackService.notifyCompletion(
+                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo()));
+        }
+        return RequestView.from(r);
     }
+
+    /** 요청자가 내용을 수정. 이미 진행중/완료였다면 물류팀 알림이 자동으로 남습니다. */
+    @PatchMapping("/{sr}")
+    public RequestView edit(@PathVariable String sr, @Valid @RequestBody CreateRequestDto dto) {
+        return RequestView.from(service.edit(sr, dto));
+    }
+
+    /** 요청자가 취소. 상태를 '취소'로 바꿀 뿐 데이터는 남깁니다. */
+    @PatchMapping("/{sr}/cancel")
+    public RequestView cancel(@PathVariable String sr) {
+        return RequestView.from(service.cancel(sr));
+    }
+
+    /** 물류팀이 확인해야 할, 이미 진행중/완료인 건에 대한 요청자 변경 목록 */
+    @GetMapping("/alerts")
+    public List<LedgerView> alerts() {
+        return service.findPendingAlerts().stream().map(LedgerView::from).toList();
+    }
+
+    /** 물류팀이 알림을 확인(닫기) */
+    @PostMapping("/{sr}/alerts/ack")
+    public void ackAlert(@PathVariable String sr) {
+        service.acknowledgeAlert(sr);
+    }
+
+    /**
+     * 물류팀이 택배사/송장번호를 수기로 등록.
+     * Slack으로 접수된 요청이면, 등록 즉시 요청자에게 Slack 알림을 보냅니다.
+     */
+    @PatchMapping("/{sr}/tracking")
+    public RequestView registerTracking(@PathVariable String sr, @RequestBody TrackingDto body) {
+        ShipmentRequest r = service.registerTracking(sr, body.carrier(), body.trackingNo());
+        if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
+            slackService.async(() -> slackService.notifyTracking(
+                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), r.getCarrier(), r.getTrackingNo()));
+        }
+        return RequestView.from(r);
+    }
+
+    public record TrackingDto(String carrier, String trackingNo) {}
+
+    /**
+     * 이지어드민 관리번호(seq)를 연결. 이후 백그라운드 작업이 주기적으로 확인해서,
+     * 송장이 등록되면 자동으로 채우고 Slack 알림까지 보냅니다. (수기 입력 불필요)
+     */
+    @PatchMapping("/{sr}/link-order")
+    public RequestView linkOrder(@PathVariable String sr, @RequestBody LinkOrderDto body) {
+        return RequestView.from(service.linkEzAdminOrder(sr, body.seq()));
+    }
+
+    public record LinkOrderDto(String seq) {}
 
     public record StatusUpdateDto(String status) {}
     public record HoldDto(String reason) {}

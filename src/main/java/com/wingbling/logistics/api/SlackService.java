@@ -104,6 +104,9 @@ public class SlackService {
     // 2) 봇이 태그되면 버튼 답글 보내기
     // ------------------------------------------------------------------
 
+    // 웹 대시보드 주소. 배포 주소가 바뀌면 이 한 줄만 고치면 됩니다.
+    private static final String WEB_DASHBOARD_URL = "https://bm-glitch.github.io/logistics-dashboard/";
+
     public void handleAppMention(JsonNode event) {
         String channel = text(event, "channel");
         String threadTs = event.hasNonNull("thread_ts")
@@ -111,19 +114,65 @@ public class SlackService {
                 : text(event, "ts");
         String user = text(event, "user");
 
-        String blocks = """
+        // 나중에 송장번호 알림을 이 사람/채널로 보낼 수 있도록, 링크에 실어서 웹 화면까지 전달합니다.
+        String link = WEB_DASHBOARD_URL
+                + "?slack_channel=" + urlEnc(channel)
+                + "&slack_user=" + urlEnc(user)
+                + "#form";
+
+        String blocks = ("""
                 [
                   {"type":"section","text":{"type":"mrkdwn",
-                    "text":"<@USER_ID> 님, 출고 요청을 접수해 드릴게요.\\n아래 버튼을 눌러 요청서를 작성해 주세요."}},
+                    "text":"<@USER_ID> 님, 출고 요청서를 작성해 주세요."}},
                   {"type":"actions","elements":[
-                    {"type":"button","action_id":"open_request_form","style":"primary",
-                     "text":{"type":"plain_text","text":"📋 출고요청 폼 작성하기"},
-                     "value":"open"}
+                    {"type":"button","style":"primary",
+                     "text":{"type":"plain_text","text":"🌐 웹에서 요청서 작성하기"},
+                     "url":"LINK_URL"}
                   ]}
                 ]
-                """.replace("USER_ID", user == null ? "" : user);
+                """)
+                .replace("USER_ID", user == null ? "" : user)
+                .replace("LINK_URL", link);
 
-        postMessage(channel, threadTs, "출고 요청서를 작성해 주세요.", blocks);
+        postMessage(channel, threadTs, "출고 요청서를 작성해 주세요: " + link, blocks);
+    }
+
+    private String urlEnc(String s) {
+        if (s == null) return "";
+        return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8);
+    }
+
+    /** 물류팀이 '완료 전송'을 눌렀을 때, Slack으로 접수됐던 요청이면 요청자에게 완료를 알려줍니다. */
+    public void notifyCompletion(String channelId, String userId, String srNo) {
+        String blocks = ("""
+                [
+                  {"type":"section","text":{"type":"mrkdwn","text":
+                    "*SR_NO* 출고가 완료되었습니다. :white_check_mark:"}}
+                ]
+                """).replace("SR_NO", srNo);
+
+        String target = (userId != null && !userId.isBlank()) ? userId : channelId;
+        if (target == null || target.isBlank()) return;
+        postMessage(target, null, srNo + " 출고가 완료되었습니다.", blocks);
+    }
+
+    /**
+     * 물류팀이 송장번호를 등록했을 때, Slack으로 접수됐던 요청이면 요청자에게 바로 알려줍니다.
+     */
+    public void notifyTracking(String channelId, String userId, String srNo, String carrier, String trackingNo) {
+        String blocks = ("""
+                [
+                  {"type":"section","text":{"type":"mrkdwn","text":
+                    "*SR_NO* 송장이 등록되었습니다. :package:\\n택배사: CARRIER\\n송장번호: `TRACKING`"}}
+                ]
+                """)
+                .replace("SR_NO", srNo)
+                .replace("CARRIER", esc(carrier == null ? "-" : carrier))
+                .replace("TRACKING", esc(trackingNo == null ? "-" : trackingNo));
+
+        String target = (userId != null && !userId.isBlank()) ? userId : channelId;
+        if (target == null || target.isBlank()) return;
+        postMessage(target, null, srNo + " 송장이 등록되었습니다 (" + trackingNo + ")", blocks);
     }
 
     private void postMessage(String channel, String threadTs, String fallback, String blocksJson) {
@@ -192,7 +241,7 @@ public class SlackService {
                 {"type":"divider"},
 
                 {"type":"section","text":{"type":"mrkdwn","text":
-                  "*발주서를 올리면 아래 품목·수령정보가 자동으로 채워집니다.*\\n올리지 않으면 직접 입력해 주세요."}},
+                  "*발주서를 올리면 아래 품목·수령정보가 자동으로 채워집니다.*\n올리지 않으면 직접 입력해 주세요."}},
 
                 {"type":"input","block_id":"b_order_file","optional":true,
                  "label":{"type":"plain_text","text":"📎 발주서 업로드 (.xls/.xlsx)"},
@@ -361,6 +410,7 @@ public class SlackService {
         JsonNode values = payload.path("view").path("state").path("values");
         String channel = payload.path("view").path("private_metadata").asText("");
         String userName = payload.path("user").path("username").asText("");
+        String userId = payload.path("user").path("id").asText("");
 
         String billing   = values.path("b_billing").path("a_billing")
                 .path("selected_option").path("value").asText("free");
@@ -375,7 +425,7 @@ public class SlackService {
         String manualRPhone = values.path("b_rcv_phone").path("a_rcv_phone").path("value").asText("");
         String manualRAddr  = values.path("b_rcv_address").path("a_rcv_address").path("value").asText("");
         String manualRMsg   = values.path("b_rcv_message").path("a_rcv_message").path("value").asText("");
-        String sku          = values.path("b_sku").path("a_sku").path("value").asText("").trim();
+        String sku          = values.path("b_sku").path("a_sku").path("value").asText("");
 
         JsonNode files = values.path("b_order_file").path("a_order_file").path("files");
         boolean hasFile = files.isArray() && files.size() > 0;
@@ -442,7 +492,9 @@ public class SlackService {
                     null,                          // 담당자(물류팀)는 접수 후 지정
                     null, productsJson,
                     rName, rPhone, rAddr, rMsg.isBlank() ? null : rMsg,
-                    billing
+                    billing,
+                    channel.isBlank() ? null : channel,
+                    userId.isBlank() ? null : userId
             ));
             srNo = saved.getSrNo();
         } catch (Exception e) {

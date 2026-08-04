@@ -113,6 +113,37 @@ public class ShipmentRequest {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt = LocalDateTime.now();
 
+    // ---- 취소/수정 추적 (요청자가 이미 진행중/완료 건을 건드렸는지) ----
+    @Column(name = "requester_modified_at")
+    private LocalDateTime requesterModifiedAt;
+
+    @Column(name = "requester_modified_status_before", length = 10)
+    private String requesterModifiedStatusBefore;
+
+    @Column(name = "alert_acknowledged_at")
+    private LocalDateTime alertAcknowledgedAt;
+
+    // ---- 송장 정보 (수기 입력) ----
+    @Column(name = "carrier", length = 50)
+    private String carrier;
+
+    @Column(name = "tracking_no", length = 50)
+    private String trackingNo;
+
+    @Column(name = "tracking_registered_at")
+    private LocalDateTime trackingRegisteredAt;
+
+    /** 이지어드민 관리번호(seq) — 연결해두면 송장번호가 등록되는 즉시 자동으로 가져옵니다. */
+    @Column(name = "ezadmin_seq", length = 20)
+    private String ezadminSeq;
+
+    // ---- Slack에서 접수된 경우, 나중에 알림을 보내기 위한 발신 정보 ----
+    @Column(name = "slack_channel_id", length = 20)
+    private String slackChannelId;
+
+    @Column(name = "slack_user_id", length = 20)
+    private String slackUserId;
+
     public static ShipmentRequest create(String srNo, String requestTeam, String requester,
                                          String itemName, Integer quantity, LocalDate wantDate) {
         ShipmentRequest r = new ShipmentRequest();

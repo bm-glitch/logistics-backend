@@ -17,17 +17,21 @@ public record LedgerView(
         String productsJson,          // 클라이언트에서 JSON.parse 해서 사용
         Receiver receiver,
         String desiredDate, String billing, String note, String status,
-        String completedAt
+        String completedAt,
+        String carrier, String trackingNo,          // 송장 정보 (자동/수기 등록)
+        String ezadminSeq,                            // 연결된 이지어드민 관리번호 (있으면 자동확인 대상)
+        boolean hasPendingAlert                       // 물류팀이 확인해야 할 요청자 변경건인지
 ) {
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     public record Receiver(String name, String phone, String address, String message) {}
 
-    // 팀원 화면은 pending/in_progress/done 3단계만 앎. 보류는 pending으로 접어서 안 잃어버리게 함.
+    // 팀원 화면은 pending/in_progress/done/cancelled 4단계를 앎. 보류는 pending으로 접어서 안 잃어버리게 함.
     private static String mapStatus(String korean) {
         return switch (korean) {
             case "진행중" -> "in_progress";
             case "완료" -> "done";
+            case "취소" -> "cancelled";
             default -> "pending"; // 대기, 보류
         };
     }
@@ -53,7 +57,11 @@ public record LedgerView(
                 r.getBillingType() == null ? "free" : r.getBillingType(),
                 r.getNote(),
                 mapStatus(r.getStatus()),
-                r.getCompletedAt() == null ? "" : r.getCompletedAt().format(TS_FMT)
+                r.getCompletedAt() == null ? "" : r.getCompletedAt().format(TS_FMT),
+                r.getCarrier(),
+                r.getTrackingNo(),
+                r.getEzadminSeq(),
+                r.getRequesterModifiedAt() != null && r.getAlertAcknowledgedAt() == null
         );
     }
 }
