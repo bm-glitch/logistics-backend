@@ -183,11 +183,34 @@ public class EzAdminService {
         return catalogCache.size();
     }
 
+    /**
+     * 물류팀 내부 관리 전용 상품 — 이 문구로 시작하는 상품명은
+     * 타 부서의 재고 검색 결과에는 노출하지 않습니다.
+     * (물류팀이 SKU를 직접 알고 조회하는 경우는 영향받지 않습니다.)
+     */
+    private static final String[] SEARCH_EXCLUDED_PREFIXES = {
+            "네이버풀필먼트 전용 상품",
+            "오늘출발전용",
+            "로켓그로스 전용 상품",
+            "지그재그 전용",
+            "[B2B]"
+    };
+
+    private boolean isExcludedFromSearch(String name) {
+        if (name == null) return false;
+        String trimmed = name.trim();
+        for (String prefix : SEARCH_EXCLUDED_PREFIXES) {
+            if (trimmed.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
     public synchronized List<CatalogEntry> searchCatalog(String keyword) {
         refreshCatalogIfStale();
         String k = keyword == null ? "" : keyword.trim().toLowerCase();
         if (k.isEmpty()) return List.of();
         return catalogCache.stream()
+                .filter(e -> !isExcludedFromSearch(e.name()))
                 .filter(e -> e.productId().toLowerCase().contains(k)
                         || e.name().toLowerCase().contains(k)
                         || (e.barcode() != null && e.barcode().toLowerCase().contains(k)))
