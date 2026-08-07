@@ -634,4 +634,38 @@ public class SlackService {
     private String text(JsonNode n, String field) {
         return n.hasNonNull(field) ? n.get(field).asText() : null;
     }
+    /**
+     * [상품별 상태] 주문 안의 특정 상품이 보류/반려/교환요청 되었을 때,
+     * Slack으로 접수됐던 요청자에게 어떤 상품이 왜 막혔는지 알려줍니다.
+     * (완료/송장 알림과 동일한 방식 — 이 클래스의 esc(), postMessage() 를 그대로 사용)
+     *   action: "hold" | "reject" | "exchange"
+     *   reason: 대상 상품명 + 사유 문장 (예: "재고부족 반려: 상품A, 상품B")
+     */
+    public void notifyProductIssue(String channelId, String userId, String srNo, String action, String reason) {
+        String kind = switch (action == null ? "" : action) {
+            case "reject" -> "재고 부족으로 반려";
+            case "exchange" -> "교환 요청";
+            default -> "보류";
+        };
+        String emoji = "reject".equals(action) ? ":warning:"
+                : "exchange".equals(action) ? ":arrows_counterclockwise:"
+                : ":hourglass_flowing_sand:";
+
+        String blocks = ("""
+                [
+                  {"type":"section","text":{"type":"mrkdwn","text":
+                    "*SR_NO* 요청 중 일부 상품이 EMOJI *KIND* 되었습니다.\\n\\n*대상 상품 / 사유*\\nREASON\\n\\n확인 후 해당 상품을 수정해서 다시 요청해 주세요."}}
+                ]
+                """)
+                .replace("SR_NO", esc(srNo))
+                .replace("EMOJI", emoji)
+                .replace("KIND", kind)
+                .replace("REASON", esc(reason == null ? "" : reason));
+
+        String target = (userId != null && !userId.isBlank()) ? userId : channelId;
+        if (target == null || target.isBlank()) return;
+        postMessage(target, null, srNo + " 일부 상품 " + kind, blocks);
+    }
+
+
 }
