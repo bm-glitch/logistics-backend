@@ -11,8 +11,12 @@ import org.springframework.stereotype.Component;
  * 이지어드민 관리번호(seq)가 연결된 요청들을 주기적으로 확인해서,
  * 송장번호가 등록되면 자동으로 채워 넣고 Slack으로 알려주는 백그라운드 작업.
  *
- * 이 기능이 실제로 동작하려면, LogisticsApplication.java(스프링 부트 메인 클래스)에
- * EnableScheduling 어노테이션을 하나 추가해야 합니다. (이 파일만으로는 부족함)
+ * ⚠️ 이 기능이 실제로 동작하려면, LogisticsApplication.java(스프링 부트 메인 클래스)에
+ * @EnableScheduling 어노테이션을 하나 추가해야 합니다. (이 파일만으로는 부족함)
+ *
+ *   @EnableScheduling            ← 이 줄 추가
+ *   @SpringBootApplication
+ *   public class LogisticsApplication { ... }
  */
 @Component
 @RequiredArgsConstructor
@@ -35,15 +39,11 @@ public class TrackingPollJob {
             try {
                 var info = ezAdminService.checkOrderTracking(r.getEzadminSeq());
                 if (info != null && info.transNo() != null) {
-                    var updated = shipmentRequestService.registerTracking(
+                    // 자동 확인은 저장만 합니다 — 알림은 물류팀이 "송장 알림 보내기"를
+                    // 직접 눌러야만 나갑니다 (출고 전 미리 등록해두는 경우 대비).
+                    shipmentRequestService.registerTracking(
                             r.getSrNo(), info.transCorp(), info.transNo());
-                    log.info("[송장자동확인] {} 송장 자동 등록 — {} {}", r.getSrNo(), info.transCorp(), info.transNo());
-
-                    if (updated.getSlackChannelId() != null && !updated.getSlackChannelId().isBlank()) {
-                        slackService.notifyTracking(
-                                updated.getSlackChannelId(), updated.getSlackUserId(),
-                                updated.getSrNo(), updated.getCarrier(), updated.getTrackingNo());
-                    }
+                    log.info("[송장자동확인] {} 송장 자동 등록(알림 대기) — {} {}", r.getSrNo(), info.transCorp(), info.transNo());
                 }
                 Thread.sleep(1000); // 이지어드민 권장 호출 간격
             } catch (Exception e) {
