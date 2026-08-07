@@ -19,7 +19,8 @@ public record LogisticsRowView(
         int qty, String want, String to, String note,
         String status, String hold, String scope, String assignee,
         boolean sent,
-        String carrier, String trackingNo, String ezadminSeq
+        String carrier, String trackingNo, boolean trackingNotified, String ezadminSeq,
+        String requestType
 ) {
     private static final DateTimeFormatter RECV_FMT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
@@ -44,7 +45,9 @@ public record LogisticsRowView(
                 r.getNotifiedAt() != null,
                 r.getCarrier(),
                 r.getTrackingNo(),
-                r.getEzadminSeq()
+                r.getTrackingNotifiedAt() != null,
+                r.getEzadminSeq(),
+                r.getRequestType() == null ? "출고요청" : r.getRequestType()
         );
     }
 }
