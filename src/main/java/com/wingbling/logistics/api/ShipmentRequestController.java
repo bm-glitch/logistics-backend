@@ -17,11 +17,7 @@ public class ShipmentRequestController {
     private final ShipmentRequestRepository repo;
     private final SlackService slackService;
 
-    /**
-     * 접수 창구. 지금은 Postman/curl로 수동 테스트.
-     * 내일 대표님 Slack 봇 형식 확인되면, 이 엔드포인트를 그대로 두거나
-     * 형식이 다르면 변환 계층만 하나 앞에 추가하면 됨.
-     */
+    /** 접수 창구. */
     @PostMapping
     public RequestView create(@Valid @RequestBody CreateRequestDto dto) {
         return RequestView.from(service.create(dto));
@@ -42,11 +38,15 @@ public class ShipmentRequestController {
         return repo.findAll().stream().map(LedgerView::from).toList();
     }
 
-    /** "물류 대장" 화면 전용 — 취소된 건은 물류팀이 처리할 게 없으니 제외 */
+    /**
+     * "물류 대장" 화면 전용 — 취소된 건은 물류팀이 처리할 게 없으니 제외하고,
+     * 출고요청만 보여줍니다(재고확보/안전재고는 출고 대상이 아니므로 물류 대장에서 제외).
+     */
     @GetMapping("/logistics-view")
     public List<LogisticsRowView> logisticsView() {
         return repo.findAll().stream()
                 .filter(r -> !"취소".equals(r.getStatus()))
+                .filter(r -> r.getRequestType() == null || "출고요청".equals(r.getRequestType()))
                 .map(LogisticsRowView::from)
                 .toList();
     }
@@ -60,6 +60,32 @@ public class ShipmentRequestController {
     public RequestView hold(@PathVariable String sr, @RequestBody HoldDto body) {
         return RequestView.from(service.hold(sr, body.reason()));
     }
+
+    /**
+     * [상품별 상태] 주문 안의 특정 상품(들)만 보류/반려/교환요청으로 표시합니다.
+     * 상품별 독립 상태를 products_json 에 저장하고, Slack으로 접수된 요청이면
+     * 어떤 상품이 왜 막혔는지 요청자에게 알림을 보냅니다. (action="clear"는 알림 없음)
+     */
+    @PatchMapping("/{sr}/products/status")
+    public RequestView updateProductStatus(@PathVariable String sr, @RequestBody ProductStatusDto body) {
+        ShipmentRequest r = service.updateProductStatus(sr, body.action(), body.reason(), body.indexes());
+        boolean notify = body.action() != null && !"clear".equals(body.action());
+        if (notify && r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
+            slackService.async(() -> slackService.notifyProductIssue(
+                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), body.action(), body.reason()));
+        }
+        return RequestView.from(r);
+    }
+
+    public record ProductStatusDto(String action, String reason, List<Integer> indexes) {}
+
+    /** [요청유형] 요청의 유형(출고요청/재고확보/안전재고)을 지정합니다. (안전재고 요청서 접수 직후 호출) */
+    @PatchMapping("/{sr}/type")
+    public RequestView setType(@PathVariable String sr, @RequestBody TypeDto body) {
+        return RequestView.from(service.changeRequestType(sr, body.type()));
+    }
+
+    public record TypeDto(String type) {}
 
     @PostMapping("/{sr}/notify")
     public RequestView notify(@PathVariable String sr) {
@@ -96,12 +122,23 @@ public class ShipmentRequestController {
     }
 
     /**
-     * 물류팀이 택배사/송장번호를 수기로 등록.
-     * Slack으로 접수된 요청이면, 등록 즉시 요청자에게 Slack 알림을 보냅니다.
+     * 물류팀이 택배사/송장번호를 등록. 등록 자체는 알림을 보내지 않습니다.
+     * 미리 송장을 뽑아두고 출고는 나중에 하는 경우가 있어, 알림은 별도로
+     * "/{sr}/notify-tracking" 을 호출해야만 나갑니다.
      */
     @PatchMapping("/{sr}/tracking")
     public RequestView registerTracking(@PathVariable String sr, @RequestBody TrackingDto body) {
         ShipmentRequest r = service.registerTracking(sr, body.carrier(), body.trackingNo());
+        return RequestView.from(r);
+    }
+
+    /**
+     * 이미 등록된 송장 정보를 요청자에게 알림. 등록과 알림을 분리해서,
+     * 물류팀이 준비된 시점에 직접 눌러야만 Slack 알림이 나갑니다.
+     */
+    @PostMapping("/{sr}/notify-tracking")
+    public RequestView notifyTracking(@PathVariable String sr) {
+        ShipmentRequest r = service.markTrackingNotified(sr);
         if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
             slackService.async(() -> slackService.notifyTracking(
                     r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), r.getCarrier(), r.getTrackingNo()));
