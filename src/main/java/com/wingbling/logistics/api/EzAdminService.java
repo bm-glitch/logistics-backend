@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
@@ -57,10 +59,8 @@ public class EzAdminService {
             log.error("[EzAdmin] 인증키(EZADMIN_PARTNER_KEY/EZADMIN_DOMAIN_KEY) 미설정 — 조회를 건너뜁니다.");
             return result;
         }
-
         List<String> distinct = productCodes.stream().filter(s -> s != null && !s.isBlank())
                 .map(String::trim).distinct().toList();
-
         for (int i = 0; i < distinct.size(); i += BATCH_SIZE) {
             List<String> batch = distinct.subList(i, Math.min(i + BATCH_SIZE, distinct.size()));
             result.putAll(callOnce(batch));
@@ -78,20 +78,16 @@ public class EzAdminService {
                     + "&type=product_id"
                     + "&ids=" + enc(ids)
                     + "&include_ready_trans=1";
-
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(BASE_URL + "?" + query))
                     .timeout(Duration.ofSeconds(8))
                     .GET().build();
-
             HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             JsonNode root = om.readTree(res.body());
-
             if (root.path("error").asInt(-1) != 0) {
                 log.error("[EzAdmin] 재고조회 실패: {}", root.path("msg").asText(""));
                 return out;
             }
-
             JsonNode data = root.path("data");
             var fields = data.fields();
             while (fields.hasNext()) {
@@ -133,27 +129,22 @@ public class EzAdminService {
                     + "&start_date=" + java.time.LocalDate.now().minusDays(90)
                     + "&end_date=" + java.time.LocalDate.now()
                     + "&seq=" + enc(seq);
-
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(BASE_URL + "?" + query))
                     .timeout(Duration.ofSeconds(10))
                     .GET().build();
             HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             JsonNode root = om.readTree(res.body());
-
             if (root.path("error").asInt(-1) != 0) {
                 log.error("[EzAdmin] 주문조회 실패(seq={}): {}", seq, root.path("msg").asText(""));
                 return null;
             }
-
             JsonNode data = root.path("data");
             if (!data.isArray() || data.isEmpty()) return null;
-
             JsonNode order = data.get(0); // seq로 조회했으니 한 건만 옴
             String transNo = order.path("trans_no").asText("");
             String transCorp = order.path("trans_corp").asText("");
             String status = order.path("status").asText("");
-
             return new OrderTracking(seq, transCorp.isBlank() ? null : transCorp,
                     transNo.isBlank() ? null : transNo, status);
         } catch (Exception e) {
@@ -173,10 +164,29 @@ public class EzAdminService {
 
     private volatile List<CatalogEntry> catalogCache = new ArrayList<>();
     private volatile long catalogLoadedAt = 0L;
-    private static final long CATALOG_TTL_MS = 20 * 60 * 1000; // 20분
+    // [개선] 캐시 유지시간 20분 → 4시간 (재배포 후 잦은 재적재 방지)
+    private static final long CATALOG_TTL_MS = 4L * 60 * 60 * 1000;
 
-    /** 상품명/코드/바코드에 검색어가 포함된 상품을 캐시에서 찾습니다. 최대 30건. */
-    /** 검색 버튼 옆 '새로고침' — 20분 기다리지 않고 지금 바로 캐시를 다시 받아옵니다. */
+    /**
+     * [개선] 서버가 완전히 뜬 직후, 백그라운드로 상품 카탈로그를 미리 받아 둡니다(워밍).
+     * 이렇게 하면 재배포 직후 "첫 검색자"가 2만 건 로딩을 기다리던 문제(실측 47분)를 없앨 수 있어요.
+     * 기동을 막지 않도록 별도 스레드에서 실행하고, 실패해도 서버는 정상 동작합니다.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void warmCatalogOnStartup() {
+        Thread t = new Thread(() -> {
+            try {
+                log.info("[EzAdmin] 기동 후 상품 카탈로그 미리 적재 시작…");
+                refreshCatalogIfStale();
+            } catch (Exception e) {
+                log.error("[EzAdmin] 기동 시 카탈로그 워밍 실패 — 첫 검색 때 다시 시도합니다.", e);
+            }
+        }, "ezadmin-cache-warm");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 검색 버튼 옆 '새로고침' — 20분(현재 4시간) 기다리지 않고 지금 바로 캐시를 다시 받아옵니다. */
     public synchronized int forceRefreshCatalog() {
         catalogLoadedAt = 0L;
         refreshCatalogIfStale();
@@ -205,6 +215,7 @@ public class EzAdminService {
         return false;
     }
 
+    /** 상품명/코드/바코드에 검색어가 포함된 상품을 캐시에서 찾습니다. 최대 30건. */
     public synchronized List<CatalogEntry> searchCatalog(String keyword) {
         refreshCatalogIfStale();
         String k = keyword == null ? "" : keyword.trim().toLowerCase();
@@ -235,7 +246,6 @@ public class EzAdminService {
             log.error("[EzAdmin] 인증키 미설정 — 카탈로그 조회를 건너뜁니다.");
             return out;
         }
-
         int page = 1;
         int limit = 500;
         for (int i = 0; i < 20; i++) { // 최대 20페이지 (=10,000건) 안전장치
@@ -247,7 +257,6 @@ public class EzAdminService {
                     + "&end_date=" + java.time.LocalDate.now()
                     + "&page=" + page
                     + "&limit=" + limit;
-
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(BASE_URL + "?" + query))
                     .timeout(Duration.ofSeconds(15))
@@ -258,10 +267,8 @@ public class EzAdminService {
                 log.error("[EzAdmin] 상품조회 실패: {}", root.path("msg").asText(""));
                 break;
             }
-
             JsonNode data = root.path("data");
             if (!data.isArray() || data.isEmpty()) break;
-
             for (JsonNode item : data) {
                 String parentName = item.path("name").asText("");
                 JsonNode options = item.path("options");
@@ -278,7 +285,6 @@ public class EzAdminService {
                     if (!pid.isBlank()) out.add(new CatalogEntry(pid, parentName, null));
                 }
             }
-
             if (data.size() < limit) break; // 마지막 페이지
             page++;
             try { Thread.sleep(1000); } catch (InterruptedException ignored) {} // 권장 호출 간격
