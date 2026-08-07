@@ -177,6 +177,7 @@ public class SlackService {
 
     private void postMessage(String channel, String threadTs, String fallback, String blocksJson) {
         try {
+            channel = resolveDmChannel(channel);
             var body = om.createObjectNode();
             body.put("channel", channel);
             if (threadTs != null && !threadTs.isBlank()) body.put("thread_ts", threadTs);
@@ -667,5 +668,32 @@ public class SlackService {
         postMessage(target, null, srNo + " 일부 상품 " + kind, blocks);
     }
 
-
+private String resolveDmChannel(String target) {
+        if (target == null || target.isBlank()) return target;
+        char c0 = target.charAt(0);
+        if (c0 != 'U' && c0 != 'W') return target;
+        if (botToken == null || botToken.isBlank()) return target;
+        try {
+            var body = om.createObjectNode();
+            body.put("users", target);
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(SLACK_API + "conversations.open"))
+                    .timeout(Duration.ofSeconds(8))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + botToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(om.writeValueAsString(body), StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            JsonNode node = om.readTree(res.body());
+            if (node.path("ok").asBoolean(false)) {
+                String id = node.path("channel").path("id").asText("");
+                if (!id.isBlank()) return id;
+            } else {
+                log.error("[Slack] DM 채널 열기 실패: {}", res.body());
+            }
+        } catch (Exception e) {
+            log.error("[Slack] DM 채널 열기 오류", e);
+        }
+        return target;
+    }
 }
