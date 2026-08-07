@@ -57,6 +57,10 @@ public class ShipmentRequest {
     @Column(name = "scope", nullable = false, length = 10)
     private String scope = "team";
 
+    /** 출고요청 | 재고확보 | 안전재고 — 요청 유형 (기본: 출고요청) */
+    @Column(name = "request_type", length = 20)
+    private String requestType = "출고요청";
+
     @Column(name = "assignee", length = 50)
     private String assignee;
 
@@ -133,6 +137,11 @@ public class ShipmentRequest {
     @Column(name = "tracking_registered_at")
     private LocalDateTime trackingRegisteredAt;
 
+    /** 송장 정보가 요청자에게 실제로 전달된 시각 — 등록과 알림을 분리하기 위한 필드.
+     *  물류팀이 송장을 미리 등록해두고, 출고 준비가 된 뒤에 별도로 알림을 보낼 수 있습니다. */
+    @Column(name = "tracking_notified_at")
+    private LocalDateTime trackingNotifiedAt;
+
     /** 이지어드민 관리번호(seq) — 연결해두면 송장번호가 등록되는 즉시 자동으로 가져옵니다. */
     @Column(name = "ezadmin_seq", length = 20)
     private String ezadminSeq;
@@ -145,7 +154,7 @@ public class ShipmentRequest {
     private String slackUserId;
 
     public static ShipmentRequest create(String srNo, String requestTeam, String requester,
-                                         String itemName, Integer quantity, LocalDate wantDate) {
+                                          String itemName, Integer quantity, LocalDate wantDate) {
         ShipmentRequest r = new ShipmentRequest();
         r.srNo = srNo;
         r.requestTeam = requestTeam;
