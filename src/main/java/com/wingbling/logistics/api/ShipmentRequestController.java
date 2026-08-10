@@ -72,7 +72,7 @@ public class ShipmentRequestController {
         boolean notify = body.action() != null && !"clear".equals(body.action());
         if (notify && r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
             slackService.async(() -> slackService.notifyProductIssue(
-                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), body.action(), body.reason()));
+                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), body.action(), body.reason(), slackLabel(r)));
         }
         return RequestView.from(r);
     }
@@ -92,9 +92,16 @@ public class ShipmentRequestController {
         ShipmentRequest r = service.markNotified(sr);
         if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
             slackService.async(() -> slackService.notifyCompletion(
-                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo()));
+                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), slackLabel(r)));
         }
         return RequestView.from(r);
+    }
+
+    /** 요청자에게 보일 이름표(요청일_요청자_수령인)를 만듭니다. 예: 2026년08월10일_신혜인_김다래 */
+    private String slackLabel(ShipmentRequest r) {
+        return slackService.friendlyLabel(
+                r.getReceivedAt() == null ? null : r.getReceivedAt().toLocalDate(),
+                r.getRequester(), r.getReceiverName());
     }
 
     /** 요청자가 내용을 수정. 이미 진행중/완료였다면 물류팀 알림이 자동으로 남습니다. */
@@ -141,7 +148,7 @@ public class ShipmentRequestController {
         ShipmentRequest r = service.markTrackingNotified(sr);
         if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
             slackService.async(() -> slackService.notifyTracking(
-                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), r.getCarrier(), r.getTrackingNo()));
+                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), r.getCarrier(), r.getTrackingNo(), slackLabel(r)));
         }
         return RequestView.from(r);
     }
