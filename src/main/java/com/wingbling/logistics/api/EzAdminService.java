@@ -31,7 +31,9 @@ import java.util.*;
 public class EzAdminService {
 
     private static final Logger log = LoggerFactory.getLogger(EzAdminService.class);
-    private static final String BASE_URL = "https://api2.ezadmin.co.kr/function.php";
+    // 우리 서버는 해외(Railway EU)에서 돌아가므로 이지어드민 '국외 호출 서버'를 사용합니다.
+    // (국내 서버 https://api2.ezadmin.co.kr 는 해외에서 호출 시 연결이 차단됩니다.)
+    private static final String BASE_URL = "https://global-api2.ezadmin.co.kr/function.php";
     private static final int BATCH_SIZE = 100; // 이지어드민 1회 최대 조회 건수
 
     private final ObjectMapper om = new ObjectMapper();
