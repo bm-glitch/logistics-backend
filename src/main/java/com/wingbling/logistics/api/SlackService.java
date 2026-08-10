@@ -142,37 +142,81 @@ public class SlackService {
         return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8);
     }
 
+    /**
+     * 요청자가 봇에게 '개인 DM'을 보냈을 때 — 채널에서 태그했을 때와 똑같이
+     * "웹에서 요청서 작성하기" 버튼을 답장합니다. (개인 메시지에서 바로 접수 흐름으로 연결)
+     * 여기서 채널은 봇과의 DM 채널(D...)이고, 링크에 요청자 정보를 실어
+     * 나중에 완료·송장 알림이 이 사람에게 되돌아갈 수 있게 합니다.
+     */
+    public void handleDirectMessage(JsonNode event) {
+        String channel = text(event, "channel");   // 봇과의 DM 채널 (D...)
+        String user = text(event, "user");
+        String link = WEB_DASHBOARD_URL
+                + "?slack_channel=" + urlEnc(channel)
+                + "&slack_user=" + urlEnc(user)
+                + "#form";
+        String blocks = ("""
+                [
+                  {"type":"section","text":{"type":"mrkdwn",
+                    "text":"<@USER_ID> 님, 출고 요청서를 작성해 주세요."}},
+                  {"type":"actions","elements":[
+                    {"type":"button","style":"primary",
+                     "text":{"type":"plain_text","text":"🌐 웹에서 요청서 작성하기"},
+                     "url":"LINK_URL"}
+                  ]}
+                ]
+                """)
+                .replace("USER_ID", user == null ? "" : user)
+                .replace("LINK_URL", link);
+        postMessage(channel, null, "출고 요청서를 작성해 주세요: " + link, blocks);
+    }
+
+    /**
+     * 요청자가 알아보기 쉬운 이름표를 만듭니다. 예: 2026년08월10일_신혜인_김다래
+     * (요청일 = 접수한 날 기준. 요청자·수령인 이름을 뒤에 붙이고, 없으면 자동으로 생략합니다.)
+     */
+    public String friendlyLabel(java.time.LocalDate date, String requester, String receiver) {
+        StringBuilder sb = new StringBuilder();
+        if (date != null) sb.append(date.format(java.time.format.DateTimeFormatter.ofPattern("yyyy년MM월dd일")));
+        if (requester != null && !requester.isBlank()) { if (sb.length() > 0) sb.append("_"); sb.append(requester.trim()); }
+        if (receiver != null && !receiver.isBlank()) { if (sb.length() > 0) sb.append("_"); sb.append(receiver.trim()); }
+        return sb.toString();
+    }
+
     /** 물류팀이 '완료 전송'을 눌렀을 때, Slack으로 접수됐던 요청이면 요청자에게 완료를 알려줍니다. */
-    public void notifyCompletion(String channelId, String userId, String srNo) {
+    public void notifyCompletion(String channelId, String userId, String srNo, String label) {
+        String title = (label == null || label.isBlank()) ? srNo : label;
         String blocks = ("""
                 [
                   {"type":"section","text":{"type":"mrkdwn","text":
-                    "*SR_NO* 출고가 완료되었습니다. :white_check_mark:"}}
+                    "*LABEL* 출고가 완료되었습니다. :white_check_mark:\\n_접수번호 SR_NO_"}}
                 ]
-                """).replace("SR_NO", srNo);
+                """).replace("LABEL", esc(title)).replace("SR_NO", esc(srNo));
 
         String target = (userId != null && !userId.isBlank()) ? userId : channelId;
         if (target == null || target.isBlank()) return;
-        postMessage(target, null, srNo + " 출고가 완료되었습니다.", blocks);
+        postMessage(target, null, title + " 출고가 완료되었습니다.", blocks);
     }
 
     /**
      * 물류팀이 송장번호를 등록했을 때, Slack으로 접수됐던 요청이면 요청자에게 바로 알려줍니다.
      */
-    public void notifyTracking(String channelId, String userId, String srNo, String carrier, String trackingNo) {
+    public void notifyTracking(String channelId, String userId, String srNo, String carrier, String trackingNo, String label) {
+        String title = (label == null || label.isBlank()) ? srNo : label;
         String blocks = ("""
                 [
                   {"type":"section","text":{"type":"mrkdwn","text":
-                    "*SR_NO* 송장이 등록되었습니다. :package:\\n택배사: CARRIER\\n송장번호: `TRACKING`"}}
+                    "*LABEL* 송장이 등록되었습니다. :package:\\n택배사: CARRIER\\n송장번호: `TRACKING`\\n_접수번호 SR_NO_"}}
                 ]
                 """)
-                .replace("SR_NO", srNo)
+                .replace("LABEL", esc(title))
+                .replace("SR_NO", esc(srNo))
                 .replace("CARRIER", esc(carrier == null ? "-" : carrier))
                 .replace("TRACKING", esc(trackingNo == null ? "-" : trackingNo));
 
         String target = (userId != null && !userId.isBlank()) ? userId : channelId;
         if (target == null || target.isBlank()) return;
-        postMessage(target, null, srNo + " 송장이 등록되었습니다 (" + trackingNo + ")", blocks);
+        postMessage(target, null, title + " 송장이 등록되었습니다 (" + trackingNo + ")", blocks);
     }
 
     private void postMessage(String channel, String threadTs, String fallback, String blocksJson) {
@@ -486,6 +530,7 @@ public class SlackService {
         }
 
         String srNo;
+        String label;
         try {
             var saved = shipmentRequestService.create(new CreateRequestDto(
                     team, requester, itemName, null, totalQty, wantDate,
@@ -498,6 +543,10 @@ public class SlackService {
                     userId.isBlank() ? null : userId
             ));
             srNo = saved.getSrNo();
+            // 요청일(접수한 날) 기준 이름표 — 예: 2026년08월10일_신혜인_김다래
+            label = friendlyLabel(
+                    saved.getReceivedAt() == null ? null : saved.getReceivedAt().toLocalDate(),
+                    requester, rName);
         } catch (Exception e) {
             log.error("[Slack] 요청 저장 실패", e);
             return errorJson("b_team", "저장에 실패했습니다. 잠시 후 다시 시도해 주세요.");
@@ -505,6 +554,7 @@ public class SlackService {
 
         // 접수 완료 메시지는 응답을 막지 않도록 비동기로 전송
         final String finalSrNo = srNo;
+        final String finalLabel = (label == null || label.isBlank()) ? srNo : label;
         final int finalQty = totalQty;
         final LocalDate finalDate = wantDate;
         final String finalSku = sku;
@@ -548,7 +598,7 @@ public class SlackService {
                     section1.put("type", "section");
                     var text1 = om.createObjectNode();
                     text1.put("type", "mrkdwn");
-                    text1.put("text", "*" + finalSrNo + "* 출고 요청이 접수되었습니다. :white_check_mark:");
+                    text1.put("text", "*" + finalLabel + "* 출고 요청이 접수되었습니다. :white_check_mark:\n_접수번호 " + finalSrNo + "_");
                     section1.set("text", text1);
 
                     var section2 = om.createObjectNode();
@@ -642,7 +692,8 @@ public class SlackService {
      *   action: "hold" | "reject" | "exchange"
      *   reason: 대상 상품명 + 사유 문장 (예: "재고부족 반려: 상품A, 상품B")
      */
-    public void notifyProductIssue(String channelId, String userId, String srNo, String action, String reason) {
+    public void notifyProductIssue(String channelId, String userId, String srNo, String action, String reason, String label) {
+        String title = (label == null || label.isBlank()) ? srNo : label;
         String kind = switch (action == null ? "" : action) {
             case "reject" -> "재고 부족으로 반려";
             case "exchange" -> "교환 요청";
@@ -655,9 +706,10 @@ public class SlackService {
         String blocks = ("""
                 [
                   {"type":"section","text":{"type":"mrkdwn","text":
-                    "*SR_NO* 요청 중 일부 상품이 EMOJI *KIND* 되었습니다.\\n\\n*대상 상품 / 사유*\\nREASON\\n\\n확인 후 해당 상품을 수정해서 다시 요청해 주세요."}}
+                    "*LABEL* 요청 중 일부 상품이 EMOJI *KIND* 되었습니다.\\n\\n*대상 상품 / 사유*\\nREASON\\n\\n_접수번호 SR_NO_\\n\\n확인 후 해당 상품을 수정해서 다시 요청해 주세요."}}
                 ]
                 """)
+                .replace("LABEL", esc(title))
                 .replace("SR_NO", esc(srNo))
                 .replace("EMOJI", emoji)
                 .replace("KIND", kind)
@@ -665,7 +717,7 @@ public class SlackService {
 
         String target = (userId != null && !userId.isBlank()) ? userId : channelId;
         if (target == null || target.isBlank()) return;
-        postMessage(target, null, srNo + " 일부 상품 " + kind, blocks);
+        postMessage(target, null, title + " 일부 상품 " + kind, blocks);
     }
 
 private String resolveDmChannel(String target) {
