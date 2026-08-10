@@ -1,5 +1,4 @@
 package com.wingbling.logistics.api;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -9,10 +8,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-
 /**
  * Slack이 우리 서버로 보내는 요청을 받는 창구.
  *
@@ -26,12 +23,9 @@ import java.nio.charset.StandardCharsets;
 @RequestMapping("/slack")
 @RequiredArgsConstructor
 public class SlackController {
-
     private static final Logger log = LoggerFactory.getLogger(SlackController.class);
-
     private final SlackService slack;
     private final ObjectMapper om = new ObjectMapper();
-
     // ------------------------------------------------------------------
     // Event Subscriptions
     // ------------------------------------------------------------------
@@ -48,7 +42,6 @@ public class SlackController {
         } catch (Exception e) {
             return ResponseEntity.badRequest().body("invalid json");
         }
-
         // 1) URL 검증 — Slack 앱 설정에서 주소를 등록할 때 딱 한 번 옵니다.
         //    서명 검증보다 먼저 처리해야 등록이 됩니다.
         if ("url_verification".equals(root.path("type").asText())) {
@@ -56,32 +49,33 @@ public class SlackController {
             log.info("[Slack] URL 검증 요청 수신");
             return ResponseEntity.ok(challenge);
         }
-
         // 2) 진짜 Slack이 보낸 요청인지 확인
         if (!slack.verify(ts, sig, rawBody)) {
             log.warn("[Slack] 서명 검증 실패 — 요청 거부");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("bad signature");
         }
-
         // 3) 재전송은 무시 (같은 답글이 여러 번 달리는 것 방지)
         if (retryNum != null) {
             log.info("[Slack] 재전송 요청 무시 (retry={})", retryNum);
             return ResponseEntity.ok("ok");
         }
-
         JsonNode event = root.path("event");
         String eventType = event.path("type").asText("");
-
         // 봇 자신이 쓴 글에는 반응하지 않음 (무한 반복 방지)
         boolean isBot = event.hasNonNull("bot_id") || "bot_message".equals(event.path("subtype").asText());
-
         if ("app_mention".equals(eventType) && !isBot) {
             slack.async(() -> slack.handleAppMention(event));
         }
-
+        // 봇에게 직접 보낸 개인 DM(1:1 대화)도 채널 멘션과 똑같이 '요청서 작성' 버튼으로 응답합니다.
+        // (사람이 직접 친 메시지만 — 편집/삭제/봇 메시지는 subtype·bot_id로 걸러 무한 반복을 막습니다.)
+        boolean isDirectMessage = "message".equals(eventType)
+                && "im".equals(event.path("channel_type").asText())
+                && event.path("subtype").asText("").isBlank();
+        if (isDirectMessage && !isBot) {
+            slack.async(() -> slack.handleDirectMessage(event));
+        }
         return ResponseEntity.ok("ok");
     }
-
     // ------------------------------------------------------------------
     // Interactivity (버튼 클릭 / 모달 제출)
     // ------------------------------------------------------------------
@@ -95,7 +89,6 @@ public class SlackController {
             log.warn("[Slack] 서명 검증 실패 — interaction 거부");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("bad signature");
         }
-
         // payload=<URL 인코딩된 JSON> 형태로 옵니다.
         String json = null;
         for (String pair : rawBody.split("&")) {
@@ -106,16 +99,13 @@ public class SlackController {
             }
         }
         if (json == null) return ResponseEntity.ok("");
-
         JsonNode payload;
         try {
             payload = om.readTree(json);
         } catch (Exception e) {
             return ResponseEntity.ok("");
         }
-
         String type = payload.path("type").asText("");
-
         // 버튼 클릭 → 모달 열기
         // trigger_id는 3초 안에 써야 해서 여기서는 기다리지 않고 바로 띄웁니다.
         if ("block_actions".equals(type)) {
@@ -127,7 +117,6 @@ public class SlackController {
             }
             return ResponseEntity.ok("");
         }
-
         // 모달 제출 → DB 저장
         // 발주서 파일을 내려받아 읽는 과정이 있어 동기로 처리합니다 (Slack 제한: 3초 이내 응답).
         // 오류가 있으면 Slack이 모달에 바로 표시할 수 있도록 JSON을 그대로 돌려줍니다.
@@ -140,10 +129,8 @@ public class SlackController {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(result);
         }
-
         return ResponseEntity.ok("");
     }
-
     /** 배포 확인용 — 브라우저로 열어서 살아있는지 볼 수 있습니다. */
     @GetMapping("/health")
     public String health() {
