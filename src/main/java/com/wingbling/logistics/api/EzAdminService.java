@@ -166,6 +166,8 @@ public class EzAdminService {
 
     private volatile List<CatalogEntry> catalogCache = new ArrayList<>();
     private volatile long catalogLoadedAt = 0L;
+    // 목록을 백그라운드에서 받는 중인지 표시 (검색이 멈추지 않도록 + 중복 로딩 방지)
+    private final java.util.concurrent.atomic.AtomicBoolean catalogRefreshing = new java.util.concurrent.atomic.AtomicBoolean(false);
     // [개선] 캐시 유지시간 20분 → 4시간 (재배포 후 잦은 재적재 방지)
     private static final long CATALOG_TTL_MS = 4L * 60 * 60 * 1000;
 
@@ -176,16 +178,8 @@ public class EzAdminService {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void warmCatalogOnStartup() {
-        Thread t = new Thread(() -> {
-            try {
-                log.info("[EzAdmin] 기동 후 상품 카탈로그 미리 적재 시작…");
-                refreshCatalogIfStale();
-            } catch (Exception e) {
-                log.error("[EzAdmin] 기동 시 카탈로그 워밍 실패 — 첫 검색 때 다시 시도합니다.", e);
-            }
-        }, "ezadmin-cache-warm");
-        t.setDaemon(true);
-        t.start();
+        log.info("[EzAdmin] 기동 후 상품 카탈로그 미리 적재 시작…");
+        triggerRefreshIfStaleAsync();
     }
 
     /** 검색 버튼 옆 '새로고침' — 20분(현재 4시간) 기다리지 않고 지금 바로 캐시를 다시 받아옵니다. */
@@ -217,18 +211,37 @@ public class EzAdminService {
         return false;
     }
 
-    /** 상품명/코드/바코드에 검색어가 포함된 상품을 캐시에서 찾습니다. 최대 30건. */
-    public synchronized List<CatalogEntry> searchCatalog(String keyword) {
-        refreshCatalogIfStale();
+    /** 상품명/코드/바코드에 검색어가 포함된 상품을 캐시에서 찾습니다. 최대 30건.
+     *  [개선] 목록을 다시 받아오는 작업은 뒤(백그라운드)에서만 돌리고, 검색은 기다리지 않고
+     *  현재 저장된 목록에서 즉시 찾아 돌려줍니다. → 검색이 멈추지 않아요. */
+    public List<CatalogEntry> searchCatalog(String keyword) {
+        triggerRefreshIfStaleAsync();
         String k = keyword == null ? "" : keyword.trim().toLowerCase();
         if (k.isEmpty()) return List.of();
-        return catalogCache.stream()
+        List<CatalogEntry> snapshot = catalogCache; // 스냅샷 — 백그라운드 갱신과 안전하게 분리
+        return snapshot.stream()
                 .filter(e -> !isExcludedFromSearch(e.name()))
                 .filter(e -> e.productId().toLowerCase().contains(k)
                         || e.name().toLowerCase().contains(k)
                         || (e.barcode() != null && e.barcode().toLowerCase().contains(k)))
                 .limit(30)
                 .toList();
+    }
+
+    /** 캐시가 비었거나 오래됐으면, 검색을 막지 않도록 '백그라운드에서만' 목록을 다시 받아옵니다.
+     *  이미 받는 중이면 중복 실행하지 않습니다. */
+    private void triggerRefreshIfStaleAsync() {
+        boolean stale = catalogCache.isEmpty()
+                || System.currentTimeMillis() - catalogLoadedAt >= CATALOG_TTL_MS;
+        if (!stale) return;
+        if (!catalogRefreshing.compareAndSet(false, true)) return;
+        Thread t = new Thread(() -> {
+            try { refreshCatalogIfStale(); }
+            catch (Exception e) { log.error("[EzAdmin] 백그라운드 카탈로그 갱신 오류", e); }
+            finally { catalogRefreshing.set(false); }
+        }, "ezadmin-catalog-refresh");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void refreshCatalogIfStale() {
