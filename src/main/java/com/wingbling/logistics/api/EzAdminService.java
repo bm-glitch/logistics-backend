@@ -38,7 +38,7 @@ public class EzAdminService {
 
     private final ObjectMapper om = new ObjectMapper();
     private final HttpClient http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
+            .connectTimeout(Duration.ofSeconds(10))
             .build();
 
     @Value("${ezadmin.partner-key:}")
@@ -82,7 +82,7 @@ public class EzAdminService {
                     + "&include_ready_trans=1";
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(BASE_URL + "?" + query))
-                    .timeout(Duration.ofSeconds(8))
+                    .timeout(Duration.ofSeconds(15)) // [개선] 국외 서버 여유 시간 (실시간 재고조회)
                     .GET().build();
             HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             JsonNode root = om.readTree(res.body());
@@ -234,9 +234,16 @@ public class EzAdminService {
     private void refreshCatalogIfStale() {
         if (System.currentTimeMillis() - catalogLoadedAt < CATALOG_TTL_MS && !catalogCache.isEmpty()) return;
         try {
-            catalogCache = loadFullCatalog();
-            catalogLoadedAt = System.currentTimeMillis();
-            log.info("[EzAdmin] 상품 카탈로그 캐시 갱신 완료 — {}건", catalogCache.size());
+            List<CatalogEntry> loaded = loadFullCatalog();
+            // [개선] 받아온 상품이 있을 때만 캐시를 교체합니다.
+            // 일시적으로 0건이 와도 기존에 잘 받아둔 목록을 날리지 않아, "떴다 사라졌다" 현상을 없앱니다.
+            if (!loaded.isEmpty()) {
+                catalogCache = loaded;
+                catalogLoadedAt = System.currentTimeMillis();
+                log.info("[EzAdmin] 상품 카탈로그 캐시 갱신 완료 — {}건", catalogCache.size());
+            } else {
+                log.warn("[EzAdmin] 이번 조회 0건 — 기존 캐시({}건) 유지, 다음 검색 때 다시 시도", catalogCache.size());
+            }
         } catch (Exception e) {
             log.error("[EzAdmin] 상품 카탈로그 갱신 실패 — 기존 캐시({}건) 유지", catalogCache.size(), e);
         }
@@ -259,37 +266,44 @@ public class EzAdminService {
                     + "&end_date=" + java.time.LocalDate.now()
                     + "&page=" + page
                     + "&limit=" + limit;
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(BASE_URL + "?" + query))
-                    .timeout(Duration.ofSeconds(15))
-                    .GET().build();
-            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            JsonNode root = om.readTree(res.body());
-            if (root.path("error").asInt(-1) != 0) {
-                log.error("[EzAdmin] 상품조회 실패: {}", root.path("msg").asText(""));
+            try {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(BASE_URL + "?" + query))
+                        .timeout(Duration.ofSeconds(30)) // [개선] 국외 서버가 느려도 끝까지 받도록 여유 있게
+                        .GET().build();
+                HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                JsonNode root = om.readTree(res.body());
+                if (root.path("error").asInt(-1) != 0) {
+                    log.error("[EzAdmin] 상품조회 실패(page {}): {}", page, root.path("msg").asText(""));
+                    break;
+                }
+                JsonNode data = root.path("data");
+                if (!data.isArray() || data.isEmpty()) break;
+                for (JsonNode item : data) {
+                    String parentName = item.path("name").asText("");
+                    JsonNode options = item.path("options");
+                    if (options.isArray() && !options.isEmpty()) {
+                        for (JsonNode opt : options) {
+                            String pid = opt.path("product_id").asText("");
+                            if (pid.isBlank()) continue;
+                            String optText = opt.path("options").asText("");
+                            String display = optText.isBlank() ? parentName : (parentName + " " + optText);
+                            out.add(new CatalogEntry(pid, display, opt.path("barcode").asText(null)));
+                        }
+                    } else {
+                        String pid = item.path("product_id").asText("");
+                        if (!pid.isBlank()) out.add(new CatalogEntry(pid, parentName, null));
+                    }
+                }
+                if (data.size() < limit) break; // 마지막 페이지
+                page++;
+                try { Thread.sleep(1000); } catch (InterruptedException ignored) {} // 권장 호출 간격
+            } catch (Exception e) {
+                // [개선] 한 페이지가 느리거나 실패해도, 여태 받은 상품은 버리지 않고 그대로 씁니다.
+                // (예전엔 여기서 전부 버리고 처음부터 다시 하느라 "됐다 안 됐다" 했어요.)
+                log.error("[EzAdmin] 카탈로그 {}페이지 조회 실패 — 여기까지 받은 {}건으로 진행합니다", page, out.size(), e);
                 break;
             }
-            JsonNode data = root.path("data");
-            if (!data.isArray() || data.isEmpty()) break;
-            for (JsonNode item : data) {
-                String parentName = item.path("name").asText("");
-                JsonNode options = item.path("options");
-                if (options.isArray() && !options.isEmpty()) {
-                    for (JsonNode opt : options) {
-                        String pid = opt.path("product_id").asText("");
-                        if (pid.isBlank()) continue;
-                        String optText = opt.path("options").asText("");
-                        String display = optText.isBlank() ? parentName : (parentName + " " + optText);
-                        out.add(new CatalogEntry(pid, display, opt.path("barcode").asText(null)));
-                    }
-                } else {
-                    String pid = item.path("product_id").asText("");
-                    if (!pid.isBlank()) out.add(new CatalogEntry(pid, parentName, null));
-                }
-            }
-            if (data.size() < limit) break; // 마지막 페이지
-            page++;
-            try { Thread.sleep(1000); } catch (InterruptedException ignored) {} // 권장 호출 간격
         }
         return out;
     }
