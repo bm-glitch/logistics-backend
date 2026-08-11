@@ -134,6 +134,11 @@ public class ShipmentRequest {
     @Column(name = "tracking_no", length = 50)
     private String trackingNo;
 
+    /** 여러 송장 저장 (JSON 배열). 예: [{"carrier":"CJ대한통운","trackingNo":"123"}]
+     *  단일 carrier/trackingNo 는 하위호환을 위해 목록의 첫 번째와 동일하게 유지합니다. */
+    @Column(name = "trackings_json", columnDefinition = "text")
+    private String trackingsJson;
+
     @Column(name = "tracking_registered_at")
     private LocalDateTime trackingRegisteredAt;
 
