@@ -201,22 +201,24 @@ public class SlackService {
     /**
      * 물류팀이 송장번호를 등록했을 때, Slack으로 접수됐던 요청이면 요청자에게 바로 알려줍니다.
      */
-    public void notifyTracking(String channelId, String userId, String srNo, String carrier, String trackingNo, String label) {
+    public void notifyTracking(String channelId, String userId, String srNo, String trackingsText, String label) {
         String title = (label == null || label.isBlank()) ? srNo : label;
+        // 여러 송장을 줄바꿈(\n)으로 이어붙인 문자열을 그대로 보여줍니다. JSON 안전하게 이스케이프하되 줄바꿈은 유지.
+        String tt = (trackingsText == null || trackingsText.isBlank()) ? "-" : trackingsText;
+        String ttSafe = tt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", " ").replace("\n", "\\n");
         String blocks = ("""
                 [
                   {"type":"section","text":{"type":"mrkdwn","text":
-                    "*LABEL* 송장이 등록되었습니다. :package:\\n택배사: CARRIER\\n송장번호: `TRACKING`\\n_접수번호 SR_NO_"}}
+                    "*LABEL* 송장이 등록되었습니다. :package:\\nTRACKINGS\\n_접수번호 SR_NO_"}}
                 ]
                 """)
                 .replace("LABEL", esc(title))
                 .replace("SR_NO", esc(srNo))
-                .replace("CARRIER", esc(carrier == null ? "-" : carrier))
-                .replace("TRACKING", esc(trackingNo == null ? "-" : trackingNo));
+                .replace("TRACKINGS", ttSafe);
 
         String target = (userId != null && !userId.isBlank()) ? userId : channelId;
         if (target == null || target.isBlank()) return;
-        postMessage(target, null, title + " 송장이 등록되었습니다 (" + trackingNo + ")", blocks);
+        postMessage(target, null, title + " 송장이 등록되었습니다", blocks);
     }
 
     private void postMessage(String channel, String threadTs, String fallback, String blocksJson) {
