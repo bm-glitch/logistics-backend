@@ -1,8 +1,14 @@
 package com.wingbling.logistics.api;
 
 import com.wingbling.logistics.domain.ShipmentRequest;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * "물류 대장" 화면(출고요청 대장 프로토타입) 전용 응답 뷰.
@@ -20,9 +26,28 @@ public record LogisticsRowView(
         String status, String hold, String scope, String assignee,
         boolean sent,
         String carrier, String trackingNo, boolean trackingNotified, String ezadminSeq,
-        String requestType
+        String requestType,
+        List<Map<String, String>> trackings   // 여러 송장 [{carrier, trackingNo}]
 ) {
     private static final DateTimeFormatter RECV_FMT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
+    private static final ObjectMapper TRK_OM = new ObjectMapper();
+
+    /** 저장된 송장 목록. 없으면 예전 단일 송장을 1개짜리 목록으로 변환해 돌려줍니다. */
+    private static List<Map<String, String>> parseTrackings(ShipmentRequest r) {
+        List<Map<String, String>> list = new ArrayList<>();
+        String j = r.getTrackingsJson();
+        if (j != null && !j.isBlank()) {
+            try { list = TRK_OM.readValue(j, new TypeReference<List<Map<String, String>>>() {}); }
+            catch (Exception e) { list = new ArrayList<>(); }
+        }
+        if (list.isEmpty() && r.getTrackingNo() != null && !r.getTrackingNo().isBlank()) {
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("carrier", r.getCarrier() == null ? "" : r.getCarrier());
+            m.put("trackingNo", r.getTrackingNo());
+            list.add(m);
+        }
+        return list;
+    }
 
     public static LogisticsRowView from(ShipmentRequest r) {
         return new LogisticsRowView(
@@ -47,7 +72,8 @@ public record LogisticsRowView(
                 r.getTrackingNo(),
                 r.getTrackingNotifiedAt() != null,
                 r.getEzadminSeq(),
-                r.getRequestType() == null ? "출고요청" : r.getRequestType()
+                r.getRequestType() == null ? "출고요청" : r.getRequestType(),
+                parseTrackings(r)
         );
     }
 }
