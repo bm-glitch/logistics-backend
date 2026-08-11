@@ -120,14 +120,84 @@ public class ShipmentRequestService {
                 .toList();
     }
 
-    /** 물류팀이 수기로 택배사/송장번호를 등록. */
+    /** 물류팀이 수기로 택배사/송장번호를 등록. (여러 개 지원 — 같은 송장번호는 중복 추가하지 않고 뒤에 덧붙임) */
     public ShipmentRequest registerTracking(String srNo, String carrier, String trackingNo) {
         ShipmentRequest r = repo.findBySrNo(srNo)
                 .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
-        r.setCarrier(carrier);
-        r.setTrackingNo(trackingNo);
-        r.setTrackingRegisteredAt(LocalDateTime.now());
+        if (trackingNo != null && !trackingNo.isBlank()) {
+            List<Map<String, String>> list = readTrackings(r);
+            boolean exists = list.stream().anyMatch(t -> trackingNo.equals(t.get("trackingNo")));
+            if (!exists) {
+                var m = new java.util.LinkedHashMap<String, String>();
+                m.put("carrier", carrier == null ? "" : carrier);
+                m.put("trackingNo", trackingNo.trim());
+                list.add(m);
+            }
+            syncTrackings(r, list);
+        }
         return r;
+    }
+
+    /** 여러 송장을 통째로 교체 저장. (물류대장 송장 시트에서 +추가/삭제 후 저장할 때 사용) */
+    public ShipmentRequest setTrackings(String srNo, List<Map<String, String>> trackings) {
+        ShipmentRequest r = repo.findBySrNo(srNo)
+                .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
+        List<Map<String, String>> clean = new ArrayList<>();
+        if (trackings != null) {
+            for (Map<String, String> t : trackings) {
+                String no = t == null ? null : t.get("trackingNo");
+                if (no == null || no.isBlank()) continue;
+                var m = new java.util.LinkedHashMap<String, String>();
+                m.put("carrier", t.getOrDefault("carrier", "") == null ? "" : t.getOrDefault("carrier", ""));
+                m.put("trackingNo", no.trim());
+                clean.add(m);
+            }
+        }
+        syncTrackings(r, clean);
+        return r;
+    }
+
+    /** 송장 목록을 JSON에 저장하고, 하위호환용 단일 필드(carrier/trackingNo)와 등록시각을 맞춰줍니다. */
+    private void syncTrackings(ShipmentRequest r, List<Map<String, String>> list) {
+        try { r.setTrackingsJson(OM.writeValueAsString(list)); } catch (Exception ignored) {}
+        if (list.isEmpty()) {
+            r.setCarrier(null);
+            r.setTrackingNo(null);
+        } else {
+            r.setCarrier(list.get(0).get("carrier"));
+            r.setTrackingNo(list.get(0).get("trackingNo"));
+            r.setTrackingRegisteredAt(LocalDateTime.now());
+        }
+    }
+
+    /** 저장된 송장 목록을 읽습니다. 목록이 비었는데 예전 단일 송장이 있으면 그걸 1개짜리 목록으로 돌려줍니다. */
+    public List<Map<String, String>> readTrackings(ShipmentRequest r) {
+        List<Map<String, String>> list = new ArrayList<>();
+        String j = r.getTrackingsJson();
+        if (j != null && !j.isBlank()) {
+            try { list = OM.readValue(j, new TypeReference<List<Map<String, String>>>() {}); }
+            catch (Exception e) { list = new ArrayList<>(); }
+        }
+        if (list.isEmpty() && r.getTrackingNo() != null && !r.getTrackingNo().isBlank()) {
+            var m = new java.util.LinkedHashMap<String, String>();
+            m.put("carrier", r.getCarrier() == null ? "" : r.getCarrier());
+            m.put("trackingNo", r.getTrackingNo());
+            list.add(m);
+        }
+        return list;
+    }
+
+    /** 요청자 알림용 — 여러 송장을 사람이 읽기 좋게 줄바꿈으로 이어붙입니다. 예: "CJ대한통운 · 123\n한진택배 · 456" */
+    public String trackingsText(ShipmentRequest r) {
+        List<Map<String, String>> list = readTrackings(r);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) sb.append("\n");
+            String c = list.get(i).get("carrier");
+            String no = list.get(i).get("trackingNo");
+            sb.append((c == null || c.isBlank()) ? "-" : c).append(" · ").append(no == null ? "" : no);
+        }
+        return sb.toString();
     }
 
     /**
