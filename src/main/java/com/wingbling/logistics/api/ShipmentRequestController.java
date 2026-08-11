@@ -135,7 +135,14 @@ public class ShipmentRequestController {
      */
     @PatchMapping("/{sr}/tracking")
     public RequestView registerTracking(@PathVariable String sr, @RequestBody TrackingDto body) {
-        ShipmentRequest r = service.registerTracking(sr, body.carrier(), body.trackingNo());
+        ShipmentRequest r;
+        if (body.trackings() != null) {
+            // 물류대장 시트에서 여러 송장을 통째로 저장(교체)하는 경우
+            r = service.setTrackings(sr, body.trackings());
+        } else {
+            // 기존 방식(단일 송장 추가) — 자동 송장 채움 등에서 사용
+            r = service.registerTracking(sr, body.carrier(), body.trackingNo());
+        }
         return RequestView.from(r);
     }
 
@@ -147,13 +154,14 @@ public class ShipmentRequestController {
     public RequestView notifyTracking(@PathVariable String sr) {
         ShipmentRequest r = service.markTrackingNotified(sr);
         if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
+            String trackingsText = service.trackingsText(r);
             slackService.async(() -> slackService.notifyTracking(
-                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), r.getCarrier(), r.getTrackingNo(), slackLabel(r)));
+                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), trackingsText, slackLabel(r)));
         }
         return RequestView.from(r);
     }
 
-    public record TrackingDto(String carrier, String trackingNo) {}
+    public record TrackingDto(String carrier, String trackingNo, java.util.List<java.util.Map<String, String>> trackings) {}
 
     /**
      * 이지어드민 관리번호(seq)를 연결. 이후 백그라운드 작업이 주기적으로 확인해서,
