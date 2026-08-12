@@ -104,16 +104,40 @@ public class ShipmentRequestController {
                 r.getRequester(), r.getReceiverName());
     }
 
-    /** 요청자가 내용을 수정. 이미 진행중/완료였다면 물류팀 알림이 자동으로 남습니다. */
+    /** 요청자가 내용을 수정. 이미 진행중/완료였다면 물류팀 알림이 자동으로 남습니다.
+     *  changedBy(변경자)·changeReason(사유)는 변경 이력에 기록됩니다. */
     @PatchMapping("/{sr}")
-    public RequestView edit(@PathVariable String sr, @Valid @RequestBody CreateRequestDto dto) {
-        return RequestView.from(service.edit(sr, dto));
+    public RequestView edit(@PathVariable String sr, @Valid @RequestBody CreateRequestDto dto,
+                            @RequestParam(required = false) String changedBy,
+                            @RequestParam(required = false) String changeReason) {
+        return RequestView.from(service.edit(sr, dto, changedBy, changeReason));
     }
 
-    /** 요청자가 취소. 상태를 '취소'로 바꿀 뿐 데이터는 남깁니다. */
+    /** 요청자가 취소. 상태를 '취소'로 바꿀 뿐 데이터는 남깁니다.
+     *  changedBy(변경자)·changeReason(사유)는 변경 이력에 기록됩니다. */
     @PatchMapping("/{sr}/cancel")
-    public RequestView cancel(@PathVariable String sr) {
-        return RequestView.from(service.cancel(sr));
+    public RequestView cancel(@PathVariable String sr,
+                              @RequestParam(required = false) String changedBy,
+                              @RequestParam(required = false) String changeReason) {
+        return RequestView.from(service.cancel(sr, changedBy, changeReason));
+    }
+
+    /** 요청 변경 이력(수정·취소) 조회 — 누가·언제·왜·무엇을 바꿨는지 */
+    @GetMapping("/{sr}/history")
+    public List<ChangeLogView> history(@PathVariable String sr) {
+        return service.findHistory(sr).stream().map(ChangeLogView::from).toList();
+    }
+
+    /** 변경 이력 응답 뷰 */
+    public record ChangeLogView(Long id, String action, String actor, String reason,
+                                String changedAt, String beforeJson, String afterJson) {
+        static ChangeLogView from(com.wingbling.logistics.domain.RequestChangeLog l) {
+            return new ChangeLogView(
+                    l.getId(), l.getAction(), l.getActor(), l.getReason(),
+                    l.getChangedAt() == null ? "" :
+                            l.getChangedAt().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
+                    l.getBeforeJson(), l.getAfterJson());
+        }
     }
 
     /** 물류팀이 확인해야 할, 이미 진행중/완료인 건에 대한 요청자 변경 목록 */
