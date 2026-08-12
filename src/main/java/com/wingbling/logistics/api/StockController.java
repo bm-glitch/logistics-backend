@@ -56,6 +56,7 @@ public class StockController {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("productId", c.productId());
             row.put("name", c.name());
+            row.put("option", c.option());   // 옵션 분리 — 요청서 옵션란 자동 채우기용
             var s = stock.get(c.productId());
             row.put("stock", s == null ? null : s.stock());
             row.put("available", s == null ? null : s.available());
