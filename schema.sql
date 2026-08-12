@@ -44,3 +44,28 @@ CREATE INDEX IF NOT EXISTS idx_shipment_sku        ON shipment_request(sku);
 
 COMMENT ON COLUMN shipment_request.status IS '대기 | 진행중 | 완료 | 보류';
 COMMENT ON COLUMN shipment_request.scope  IS 'team(물류 통합) | person(개인 요청)';
+
+-- 요청서 첨부파일 (특이사항·참고자료·원본 발주서 등) — v8
+CREATE TABLE IF NOT EXISTS request_attachment (
+    id           BIGSERIAL    PRIMARY KEY,
+    sr_no        VARCHAR(20)  NOT NULL,             -- 어느 요청(SR-xxxx)의 첨부인지
+    file_name    VARCHAR(255) NOT NULL,             -- 원본 파일명
+    content_type VARCHAR(120),                      -- MIME 타입
+    byte_size    BIGINT       NOT NULL DEFAULT 0,   -- 파일 크기(바이트)
+    data         BYTEA        NOT NULL,             -- 파일 내용
+    uploaded_at  TIMESTAMP    NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_attachment_sr_no ON request_attachment(sr_no);
+
+-- 요청 변경 이력 (수정·취소 추적) — v9
+CREATE TABLE IF NOT EXISTS request_change_log (
+    id          BIGSERIAL   PRIMARY KEY,
+    sr_no       VARCHAR(20)  NOT NULL,           -- 어느 요청(SR-xxxx)의 변경인지
+    action      VARCHAR(20)  NOT NULL,           -- 수정 | 취소
+    actor       VARCHAR(50),                     -- 변경자 이름(화면 입력)
+    reason      VARCHAR(500),                    -- 변경 사유
+    before_json TEXT,                            -- 변경 전 스냅샷(JSON)
+    after_json  TEXT,                            -- 변경 후 스냅샷(JSON)
+    changed_at  TIMESTAMP    NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_change_log_sr_no ON request_change_log(sr_no);
