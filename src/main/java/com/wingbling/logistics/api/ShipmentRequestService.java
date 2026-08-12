@@ -2,8 +2,11 @@ package com.wingbling.logistics.api;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wingbling.logistics.domain.ShipmentRequest;
 import com.wingbling.logistics.domain.ShipmentRequestRepository;
+import com.wingbling.logistics.domain.RequestChangeLog;
+import com.wingbling.logistics.domain.RequestChangeLogRepository;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -20,9 +23,44 @@ import java.util.Map;
 public class ShipmentRequestService {
 
     private final ShipmentRequestRepository repo;
+    private final RequestChangeLogRepository changeLogRepo;
 
     // 상품 목록(products_json) 파싱/직렬화에 사용
     private static final ObjectMapper OM = new ObjectMapper();
+
+    /** 요청의 주요 필드를 JSON 한 덩어리로 스냅샷 — 변경 전/후 비교 기록용 */
+    private String snapshot(ShipmentRequest r) {
+        ObjectNode m = OM.createObjectNode();
+        m.put("team", r.getRequestTeam());
+        m.put("requester", r.getRequester());
+        m.put("assignee", r.getAssignee());
+        m.put("itemName", r.getItemName());
+        m.put("optionValue", r.getOptionValue());
+        m.put("quantity", r.getQuantity());
+        m.put("wantDate", r.getWantDate() == null ? null : r.getWantDate().toString());
+        m.put("receivePlace", r.getReceivePlace());
+        m.put("note", r.getNote());
+        m.put("channels", r.getChannels());
+        m.put("productsJson", r.getProductsJson());
+        m.put("receiverName", r.getReceiverName());
+        m.put("receiverPhone", r.getReceiverPhone());
+        m.put("receiverAddress", r.getReceiverAddress());
+        m.put("receiverMessage", r.getReceiverMessage());
+        m.put("billingType", r.getBillingType());
+        m.put("status", r.getStatus());
+        try { return OM.writeValueAsString(m); } catch (Exception e) { return "{}"; }
+    }
+
+    /** 변경 이력 한 줄 저장 */
+    private void logChange(String srNo, String action, String actor, String reason,
+                           String beforeJson, String afterJson) {
+        changeLogRepo.save(RequestChangeLog.of(srNo, action, actor, reason, beforeJson, afterJson));
+    }
+
+    /** 특정 요청의 변경 이력(최신순) */
+    public List<RequestChangeLog> findHistory(String srNo) {
+        return changeLogRepo.findBySrNoOrderByChangedAtDesc(srNo);
+    }
 
     /** SR-0001 형태로 자동 채번. (동시 접수량이 많아지면 DB 시퀀스로 교체 예정) */
     public synchronized String nextSrNo() {
@@ -58,17 +96,20 @@ public class ShipmentRequestService {
         return "진행중".equals(status) || "완료".equals(status);
     }
 
-    /** 요청자가 취소한 경우. 삭제하지 않고 상태만 '취소'로 바꿔서 이력을 남깁니다. */
-    public ShipmentRequest cancel(String srNo) {
+    /** 요청자가 취소한 경우. 삭제하지 않고 상태만 '취소'로 바꿔서 이력을 남깁니다.
+     *  누가·왜 취소했는지(actor/reason)를 변경 이력에 함께 기록합니다. */
+    public ShipmentRequest cancel(String srNo, String actor, String reason) {
         ShipmentRequest r = repo.findBySrNo(srNo)
                 .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
-        String before = r.getStatus();
-        if (needsAlert(before)) {
+        String beforeSnap = snapshot(r);
+        String prevStatus = r.getStatus();
+        if (needsAlert(prevStatus)) {
             r.setRequesterModifiedAt(LocalDateTime.now());
-            r.setRequesterModifiedStatusBefore(before);
+            r.setRequesterModifiedStatusBefore(prevStatus);
             r.setAlertAcknowledgedAt(null);
         }
         r.setStatus("취소");
+        logChange(srNo, "취소", actor, reason, beforeSnap, snapshot(r));
         return r;
     }
 
@@ -76,9 +117,11 @@ public class ShipmentRequestService {
      * 요청자가 내용을 수정한 경우. 상태(대기/진행중/완료)는 건드리지 않고,
      * 이미 진행중/완료였다면 물류팀이 확인해야 할 변경 알림을 남깁니다.
      */
-    public ShipmentRequest edit(String srNo, CreateRequestDto dto) {
+    public ShipmentRequest edit(String srNo, CreateRequestDto dto, String actor, String reason) {
         ShipmentRequest r = repo.findBySrNo(srNo)
                 .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
+
+        String beforeSnap = snapshot(r);
 
         if (needsAlert(r.getStatus())) {
             r.setRequesterModifiedAt(LocalDateTime.now());
@@ -102,6 +145,8 @@ public class ShipmentRequestService {
         r.setReceiverAddress(dto.receiverAddress());
         r.setReceiverMessage(dto.receiverMessage());
         r.setBillingType(dto.billingType());
+
+        logChange(srNo, "수정", actor, reason, beforeSnap, snapshot(r));
         return r;
     }
 
