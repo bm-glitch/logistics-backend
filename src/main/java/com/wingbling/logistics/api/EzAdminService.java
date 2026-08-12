@@ -161,8 +161,9 @@ public class EzAdminService {
     // 그 안에서 직접 "포함" 검색을 합니다.
     // ------------------------------------------------------------------
 
-    /** 검색 결과 한 줄 (재고는 아직 안 채워짐 — 검색 후 최종 후보만 재고를 별도 조회) */
-    public record CatalogEntry(String productId, String name, String barcode) {}
+    /** 검색 결과 한 줄 (재고는 아직 안 채워짐 — 검색 후 최종 후보만 재고를 별도 조회)
+     *  name=상품명(부모), option=옵션(색상/사이즈 등)을 분리해서 담습니다. */
+    public record CatalogEntry(String productId, String name, String option, String barcode) {}
 
     private volatile List<CatalogEntry> catalogCache = new ArrayList<>();
     private volatile long catalogLoadedAt = 0L;
@@ -223,6 +224,7 @@ public class EzAdminService {
                 .filter(e -> !isExcludedFromSearch(e.name()))
                 .filter(e -> e.productId().toLowerCase().contains(k)
                         || e.name().toLowerCase().contains(k)
+                        || (e.option() != null && e.option().toLowerCase().contains(k))
                         || (e.barcode() != null && e.barcode().toLowerCase().contains(k)))
                 .limit(30)
                 .toList();
@@ -300,12 +302,12 @@ public class EzAdminService {
                             String pid = opt.path("product_id").asText("");
                             if (pid.isBlank()) continue;
                             String optText = opt.path("options").asText("");
-                            String display = optText.isBlank() ? parentName : (parentName + " " + optText);
-                            out.add(new CatalogEntry(pid, display, opt.path("barcode").asText(null)));
+                            // 상품명(부모)과 옵션을 분리해서 저장 — 요청서에서 옵션란에 따로 채울 수 있게.
+                            out.add(new CatalogEntry(pid, parentName, optText, opt.path("barcode").asText(null)));
                         }
                     } else {
                         String pid = item.path("product_id").asText("");
-                        if (!pid.isBlank()) out.add(new CatalogEntry(pid, parentName, null));
+                        if (!pid.isBlank()) out.add(new CatalogEntry(pid, parentName, "", null));
                     }
                 }
                 if (data.size() < limit) break; // 마지막 페이지
