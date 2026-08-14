@@ -24,6 +24,7 @@ public class ShipmentRequestService {
 
     private final ShipmentRequestRepository repo;
     private final RequestChangeLogRepository changeLogRepo;
+    private final StaffDirectoryService staffDirectory;   // 요청자 Slack 주소록
 
     // 상품 목록(products_json) 파싱/직렬화에 사용
     private static final ObjectMapper OM = new ObjectMapper();
@@ -88,6 +89,24 @@ public class ShipmentRequestService {
         r.setBillingType(dto.billingType());
         r.setSlackChannelId(dto.slackChannelId());
         r.setSlackUserId(dto.slackUserId());
+
+        // 요청자 Slack 주소록 연동 (모든 요청 생성이 이 곳을 거칩니다):
+        //  · Slack으로 온 요청(slackUserId 있음) → 이름↔SlackID를 자동 저장(학습)
+        //  · 대장부/모바일 요청(slackUserId 없음) → 주소록에서 SlackID를 찾아 붙여 알림이 가게 함
+        try {
+            if (dto.slackUserId() != null && !dto.slackUserId().isBlank()) {
+                staffDirectory.remember(dto.requester(), dto.slackUserId(), dto.slackChannelId());
+            } else {
+                var s = staffDirectory.lookup(dto.requester());
+                if (s != null && s.getSlackUserId() != null && !s.getSlackUserId().isBlank()) {
+                    r.setSlackUserId(s.getSlackUserId());
+                    if (r.getSlackChannelId() == null || r.getSlackChannelId().isBlank()) {
+                        r.setSlackChannelId(s.getSlackChannelId());
+                    }
+                }
+            }
+        } catch (Exception ignore) { /* 주소록 연동 실패해도 요청 저장은 정상 진행 */ }
+
         return repo.save(r);
     }
 

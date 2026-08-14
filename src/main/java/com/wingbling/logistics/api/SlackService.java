@@ -44,6 +44,7 @@ public class SlackService {
 
     private final ShipmentRequestService shipmentRequestService;
     private final EzAdminService ezAdminService;
+    private final StaffDirectoryService staffDirectory;   // 직원 Slack 주소록 저장
     private final ObjectMapper om = new ObjectMapper();
 
     private final HttpClient http = HttpClient.newBuilder()
@@ -682,6 +683,55 @@ public class SlackService {
         } catch (Exception e) {
             log.error("[Slack] {} 호출 오류", method, e);
         }
+    }
+
+    /**
+     * Slack users.list 로 워크스페이스 직원 목록을 받아 "이름 → SlackID" 주소록에 일괄 저장합니다.
+     * (봇 토큰에 users:read 권한이 필요합니다. 없으면 0을 돌려주고 로그만 남깁니다.)
+     * 반환값 = 저장(갱신)한 인원 수.
+     */
+    public int importUsersFromSlack() {
+        if (botToken == null || botToken.isBlank()) {
+            log.error("[Slack] BOT_TOKEN 미설정 — users.list 건너뜁니다.");
+            return 0;
+        }
+        int count = 0;
+        String cursor = "";
+        try {
+            for (int page = 0; page < 20; page++) {   // 안전상 최대 20페이지
+                String url = SLACK_API + "users.list?limit=200"
+                        + (cursor.isBlank() ? "" : "&cursor=" + urlEnc(cursor));
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .timeout(Duration.ofSeconds(10))
+                        .header("Authorization", "Bearer " + botToken)
+                        .GET().build();
+                HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                JsonNode root = om.readTree(res.body());
+                if (!root.path("ok").asBoolean(false)) {
+                    log.error("[Slack] users.list 실패: {}", res.body());
+                    break;
+                }
+                for (JsonNode m : root.path("members")) {
+                    if (m.path("is_bot").asBoolean(false) || m.path("deleted").asBoolean(false)) continue;
+                    String id = m.path("id").asText("");
+                    if (id.isBlank() || "USLACKBOT".equals(id)) continue;
+                    JsonNode prof = m.path("profile");
+                    String real = prof.path("real_name").asText("");
+                    String disp = prof.path("display_name").asText("");
+                    boolean saved = false;
+                    if (!real.isBlank()) { staffDirectory.remember(real, id, null); saved = true; }
+                    if (!disp.isBlank() && !disp.equals(real)) { staffDirectory.remember(disp, id, null); saved = true; }
+                    if (saved) count++;
+                }
+                cursor = root.path("response_metadata").path("next_cursor").asText("");
+                if (cursor.isBlank()) break;
+            }
+        } catch (Exception e) {
+            log.error("[Slack] users.list 처리 오류", e);
+        }
+        log.info("[Slack] 직원 주소록 일괄 저장 완료 — {}명", count);
+        return count;
     }
 
     /** Slack은 3초 안에 응답을 요구하므로, 오래 걸리는 일은 따로 돌립니다. */
