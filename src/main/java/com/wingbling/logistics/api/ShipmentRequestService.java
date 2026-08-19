@@ -169,6 +169,50 @@ public class ShipmentRequestService {
         return r;
     }
 
+    /**
+     * 물류 상품 매칭 정정 — 요청서의 특정 상품(index)만 올바른 이지어드민 상품(코드/옵션/이름)으로 바꿉니다.
+     * 나머지 필드(수령정보·유상무상·판매처 등)는 건드리지 않아 안전합니다.
+     * 대표상품(첫 상품) 기준으로 sku/itemName/optionValue도 맞춰, 물류대장 가용재고가 바로 표시되게 합니다.
+     */
+    public ShipmentRequest rematchProduct(String srNo, Integer index, String productId, String option, String name) {
+        ShipmentRequest r = repo.findBySrNo(srNo)
+                .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
+        String before = snapshot(r);
+
+        List<Map<String, Object>> products;
+        try {
+            String pj = (r.getProductsJson() == null || r.getProductsJson().isBlank()) ? "[]" : r.getProductsJson();
+            products = OM.readValue(pj, new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) { products = new ArrayList<>(); }
+
+        int idx = (index == null || index < 0) ? 0 : index;
+        if (products.isEmpty()) {
+            Map<String, Object> p = new java.util.LinkedHashMap<>();
+            p.put("code", productId == null ? "" : productId);
+            p.put("name", name == null ? "" : name);
+            p.put("option", option == null ? "" : option);
+            p.put("qty", r.getQuantity() == null ? 1 : r.getQuantity());
+            products.add(p);
+            idx = 0;
+        } else {
+            if (idx >= products.size()) idx = 0;
+            Map<String, Object> p = products.get(idx);
+            p.put("code", productId == null ? "" : productId);
+            if (name != null) p.put("name", name);
+            if (option != null) p.put("option", option);
+        }
+
+        try { r.setProductsJson(OM.writeValueAsString(products)); } catch (Exception ignore) {}
+
+        Map<String, Object> first = products.get(0);
+        Object fc = first.get("code");   if (fc != null) r.setSku(String.valueOf(fc));
+        Object fn = first.get("name");   if (fn != null) r.setItemName(String.valueOf(fn));
+        Object fo = first.get("option"); if (fo != null) r.setOptionValue(String.valueOf(fo));
+
+        logChange(srNo, "정정", "물류", "상품 매칭 정정", before, snapshot(r));
+        return r;
+    }
+
     /** 물류팀이 알림을 확인(닫기)했을 때. */
     public ShipmentRequest acknowledgeAlert(String srNo) {
         ShipmentRequest r = repo.findBySrNo(srNo)

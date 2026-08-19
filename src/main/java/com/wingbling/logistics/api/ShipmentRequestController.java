@@ -2,10 +2,13 @@ package com.wingbling.logistics.api;
 
 import com.wingbling.logistics.domain.ShipmentRequest;
 import com.wingbling.logistics.domain.ShipmentRequestRepository;
+import com.wingbling.logistics.domain.MatchMemory;
+import com.wingbling.logistics.domain.MatchMemoryRepository;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @RestController
@@ -16,6 +19,7 @@ public class ShipmentRequestController {
     private final ShipmentRequestService service;
     private final ShipmentRequestRepository repo;
     private final SlackService slackService;
+    private final MatchMemoryRepository matchMemoryRepo;
 
     /** 접수 창구. */
     @PostMapping
@@ -203,6 +207,32 @@ public class ShipmentRequestController {
     }
 
     public record LinkOrderDto(String seq) {}
+
+    /**
+     * 물류 상품 매칭 정정 — 요청서의 특정 상품(index)의 코드/옵션/이름을 올바른 이지어드민 상품으로 바꿉니다.
+     * 전체 수정과 달리 나머지 필드(수령정보·유상무상·판매처 등)는 건드리지 않아 안전합니다.
+     * 함께 넘어온 aliasKey가 있으면 학습(match_memory)에 저장 → 다음부터 자동 매칭됩니다.
+     */
+    @PatchMapping("/{sr}/rematch")
+    public RequestView rematch(@PathVariable String sr, @RequestBody RematchDto body) {
+        ShipmentRequest r = service.rematchProduct(sr, body.index(), body.productId(), body.option(), body.name());
+        if (body.aliasKey() != null && !body.aliasKey().isBlank()
+                && body.productId() != null && !body.productId().isBlank()) {
+            String key = body.aliasKey().trim();
+            MatchMemory m = matchMemoryRepo.findByAliasKey(key).orElseGet(MatchMemory::new);
+            m.setAliasKey(key);
+            m.setProductId(body.productId().trim());
+            m.setOptionValue(body.option());
+            m.setProductName(body.name());
+            m.setSourceName(body.sourceName());
+            m.setUpdatedAt(LocalDateTime.now());
+            matchMemoryRepo.save(m);
+        }
+        return RequestView.from(r);
+    }
+
+    public record RematchDto(Integer index, String productId, String option, String name,
+                             String aliasKey, String sourceName) {}
 
     public record StatusUpdateDto(String status) {}
     public record HoldDto(String reason) {}
