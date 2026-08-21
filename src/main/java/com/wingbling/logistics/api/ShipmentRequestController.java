@@ -234,6 +234,18 @@ public class ShipmentRequestController {
     public record RematchDto(Integer index, String productId, String option, String name,
                              String aliasKey, String sourceName) {}
 
+    /**
+     * 물류팀 특이사항 메모 저장 — 안전재고 등 요청 진행상황을 수기로 기록해 여러 팀이 함께 모니터링합니다.
+     * 메모만 저장하고 나머지 필드(수령정보·유상무상·상태 등)는 건드리지 않습니다.
+     */
+    @PatchMapping("/{sr}/memo")
+    public LedgerView memo(@PathVariable String sr, @RequestBody MemoDto body) {
+        ShipmentRequest r = service.setMemo(sr, body.memo());
+        return LedgerView.from(r);
+    }
+
+    public record MemoDto(String memo) {}
+
     public record StatusUpdateDto(String status) {}
     public record HoldDto(String reason) {}
 }
