@@ -32,7 +32,7 @@ public class ShipmentRequest {
     @Column(name = "requester", nullable = false, length = 50)
     private String requester;
 
-    @Column(name = "item_name", nullable = false, length = 100)
+    @Column(name = "item_name", nullable = false, columnDefinition = "text")
     private String itemName;
 
     @Column(name = "quantity", nullable = false)
@@ -41,7 +41,7 @@ public class ShipmentRequest {
     @Column(name = "want_date", nullable = false)
     private LocalDate wantDate;
 
-    @Column(name = "receive_place", length = 100)
+    @Column(name = "receive_place", columnDefinition = "text")
     private String receivePlace;
 
     @Column(name = "note", columnDefinition = "text")
@@ -50,7 +50,7 @@ public class ShipmentRequest {
     @Column(name = "sku", length = 50)
     private String sku;
 
-    @Column(name = "option_value", length = 50)
+    @Column(name = "option_value", columnDefinition = "text")
     private String optionValue;
 
     /** team(물류 통합) | person(개인 요청) */
@@ -95,17 +95,21 @@ public class ShipmentRequest {
     @Column(name = "products_json", columnDefinition = "text")
     private String productsJson;
 
-    @Column(name = "receiver_name", length = 50)
+    @Column(name = "receiver_name", length = 200)
     private String receiverName;
 
-    @Column(name = "receiver_phone", length = 30)
+    @Column(name = "receiver_phone", length = 60)
     private String receiverPhone;
 
-    @Column(name = "receiver_address", length = 200)
+    @Column(name = "receiver_address", columnDefinition = "text")
     private String receiverAddress;
 
-    @Column(name = "receiver_message", length = 200)
+    @Column(name = "receiver_message", columnDefinition = "text")
     private String receiverMessage;
+
+    /** 물류팀 특이사항 메모(발주 진행상황 등) — 여러 팀이 함께 보고 모니터링 */
+    @Column(name = "logistics_memo", columnDefinition = "text")
+    private String logisticsMemo;
 
     /** paid(유상) | free(무상) */
     @Column(name = "billing_type", length = 10)
