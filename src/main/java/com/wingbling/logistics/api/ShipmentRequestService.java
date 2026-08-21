@@ -355,6 +355,14 @@ public class ShipmentRequestService {
         return r;
     }
 
+    /** 물류팀 특이사항 메모 저장 — 다른 필드는 건드리지 않는 안전한 부분 수정입니다. */
+    public ShipmentRequest setMemo(String srNo, String memo) {
+        ShipmentRequest r = repo.findBySrNo(srNo)
+                .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
+        r.setLogisticsMemo(memo);
+        return r;
+    }
+
     /**
      * 송장 정보를 요청자에게 실제로 알림. 등록(registerTracking)과는 완전히 분리된 동작입니다.
      * 물류팀이 이 메서드를 명시적으로 호출해야만 Slack 알림이 나갑니다.
