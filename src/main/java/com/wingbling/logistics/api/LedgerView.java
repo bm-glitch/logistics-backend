@@ -22,7 +22,8 @@ public record LedgerView(
         boolean trackingNotified,                     // 송장 정보를 요청자에게 실제로 알림을 보냈는지
         String ezadminSeq,                            // 연결된 이지어드민 관리번호 (있으면 자동확인 대상)
         boolean hasPendingAlert,                      // 물류팀이 확인해야 할 요청자 변경건인지
-        String requestType                            // 출고요청 | 재고확보 | 안전재고
+        String requestType,                           // 출고요청 | 재고확보 | 안전재고
+        String memo                                   // 물류팀 특이사항 메모(진행상황 모니터링용)
 ) {
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
@@ -65,7 +66,8 @@ public record LedgerView(
                 r.getTrackingNotifiedAt() != null,
                 r.getEzadminSeq(),
                 r.getRequesterModifiedAt() != null && r.getAlertAcknowledgedAt() == null,
-                r.getRequestType() == null ? "출고요청" : r.getRequestType()
+                r.getRequestType() == null ? "출고요청" : r.getRequestType(),
+                r.getLogisticsMemo()
         );
     }
 }
