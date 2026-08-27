@@ -48,9 +48,14 @@ public class TrackingPollJob {
                         String label = slackService.friendlyLabel(
                                 updated.getReceivedAt() == null ? null : updated.getReceivedAt().toLocalDate(),
                                 updated.getRequester(), updated.getReceiverName());
+                        // 자동으로 채워진 송장도 "08/27_장수진_522559491826" 형식으로 알립니다.
+                        java.time.LocalDate shipDate = (updated.getTrackingRegisteredAt() != null)
+                                ? updated.getTrackingRegisteredAt().toLocalDate()
+                                : java.time.LocalDate.now();
+                        String recvName = updated.getReceiverName();
                         slackService.async(() -> slackService.notifyTracking(
                                 updated.getSlackChannelId(), updated.getSlackUserId(),
-                                updated.getSrNo(), trackingsText, label));
+                                updated.getSrNo(), trackingsText, label, shipDate, recvName));
                         log.info("[송장자동확인] {} 요청자 송장 알림 자동 발송", updated.getSrNo());
                     } else {
                         log.info("[송장자동확인] {} 송장 등록했으나 Slack 연결이 없어 요청자 알림은 생략", updated.getSrNo());
