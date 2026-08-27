@@ -109,6 +109,29 @@ public class ShipmentRequestController {
                 r.getRequester(), r.getReceiverName());
     }
 
+    /** 알림에 찍을 '실제 출고일' — 송장 등록일 → 완료일 → 오늘 순으로 고릅니다. */
+    private java.time.LocalDate shipDateOf(ShipmentRequest r) {
+        if (r.getTrackingRegisteredAt() != null) return r.getTrackingRegisteredAt().toLocalDate();
+        if (r.getCompletedAt() != null) return r.getCompletedAt().toLocalDate();
+        return java.time.LocalDate.now();
+    }
+
+    /** 요청서에 Slack 정보가 없으면 이름으로 주소록을 뒤져 대상을 찾습니다. [채널, 유저] */
+    private String[] slackTargetOf(ShipmentRequest r) {
+        String channelId = r.getSlackChannelId();
+        String userId = r.getSlackUserId();
+        if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
+            var st = staffDirectory.lookup(r.getRequester());
+            if (st != null) {
+                userId = st.getSlackUserId();
+                if (st.getSlackChannelId() != null && !st.getSlackChannelId().isBlank()) {
+                    channelId = st.getSlackChannelId();
+                }
+            }
+        }
+        return new String[]{ channelId, userId };
+    }
+
     /** 요청자가 내용을 수정. 이미 진행중/완료였다면 물류팀 알림이 자동으로 남습니다.
      *  changedBy(변경자)·changeReason(사유)는 변경 이력에 기록됩니다. */
     @PatchMapping("/{sr}")
@@ -188,10 +211,18 @@ public class ShipmentRequestController {
     @PostMapping("/{sr}/notify-tracking")
     public RequestView notifyTracking(@PathVariable String sr) {
         ShipmentRequest r = service.markTrackingNotified(sr);
-        if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
+        // 대장부·모바일로 접수된 요청은 요청서에 Slack 정보가 없으므로, 이름으로 주소록을 조회합니다.
+        // (예전에는 slackChannelId 가 있는 건만 알림이 나가서, 대장부 접수 건은 조용히 누락됐습니다)
+        String[] t = slackTargetOf(r);
+        final String ch = t[0], uid = t[1];
+        if ((ch != null && !ch.isBlank()) || (uid != null && !uid.isBlank())) {
             String trackingsText = service.trackingsText(r);
+            java.time.LocalDate shipDate = shipDateOf(r);
+            String label = slackLabel(r);
+            String recvName = r.getReceiverName();
+            String srNo = r.getSrNo();
             slackService.async(() -> slackService.notifyTracking(
-                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), trackingsText, slackLabel(r)));
+                    ch, uid, srNo, trackingsText, label, shipDate, recvName));
         }
         return RequestView.from(r);
     }
@@ -225,8 +256,9 @@ public class ShipmentRequestController {
             if (Boolean.TRUE.equals(body.complete()) && !"완료".equals(r.getStatus())) {
                 r = service.updateStatus(sr, "완료");
             }
+            // "08/27_장수진_522559491826" 형식. 송장이 여러 개면 줄도 여러 개가 됩니다.
             String t = service.trackingsText(r);
-            lines.add(r.getSrNo() + (t == null || t.isBlank() ? " · 송장번호 없음" : " · " + t.replace("\n", " / ")));
+            lines.addAll(slackService.shipmentLines(shipDateOf(r), r.getReceiverName(), t));
 
             // 개별 알림 버튼이 다시 눌리지 않도록 "알림 보냄" 표시를 남깁니다.
             service.markTrackingNotified(sr);
@@ -239,15 +271,9 @@ public class ShipmentRequestController {
         }
 
         // Slack 대상 찾기 — 요청서에 저장된 채널/유저가 없으면 이름으로 주소록을 뒤집니다.
-        String channelId = head.getSlackChannelId();
-        String userId = head.getSlackUserId();
-        if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
-            var s = staffDirectory.lookup(head.getRequester());
-            if (s != null) {
-                userId = s.getSlackUserId();
-                if (s.getSlackChannelId() != null && !s.getSlackChannelId().isBlank()) channelId = s.getSlackChannelId();
-            }
-        }
+        String[] target = slackTargetOf(head);
+        String channelId = target[0];
+        String userId = target[1];
         if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
             return new BatchNotifyResult(false, sent.size(), false, head.getRequester(), skipped,
                     head.getRequester() + "님의 Slack 주소를 찾지 못했어요. 요청건은 완료 처리됐지만 알림은 못 보냈어요.");
@@ -264,8 +290,9 @@ public class ShipmentRequestController {
             }
         }
 
+        // lines 는 '송장 개수'만큼일 수 있으므로, 머리글에 쓸 건수는 따로 넘깁니다.
         boolean fileAttached = slackService.notifyBatchShipment(
-                channelId, userId, head.getRequester(), lines, fileName, file);
+                channelId, userId, head.getRequester(), lines, sent.size(), fileName, file);
 
         String msg = sent.size() + "건 알림을 한 번에 보냈어요."
                 + (fileAttached ? " (엑셀 파일 첨부 완료)" : " (엑셀 파일은 첨부하지 못했어요 — 봇 권한 files:write 확인 필요)")
