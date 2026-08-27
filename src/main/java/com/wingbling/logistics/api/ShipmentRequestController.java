@@ -20,6 +20,7 @@ public class ShipmentRequestController {
     private final ShipmentRequestRepository repo;
     private final SlackService slackService;
     private final MatchMemoryRepository matchMemoryRepo;
+    private final StaffDirectoryService staffDirectory;   // 이름 → Slack ID 주소록 (일괄 알림 대상 찾기)
 
     /** 접수 창구. */
     @PostMapping
@@ -196,6 +197,87 @@ public class ShipmentRequestController {
     }
 
     public record TrackingDto(String carrier, String trackingNo, java.util.List<java.util.Map<String, String>> trackings) {}
+
+    /* ==================================================================
+       [일괄 전송] 요청자가 엑셀 한 장으로 여러 주문건을 보냈을 때,
+       돌아가는 알림도 한 번으로 합쳐 보냅니다.
+        - 요청건들의 송장번호를 모아 한 줄씩 정리한 알림 1건
+        - 송장번호가 기입된 유상/무상 양식 엑셀 파일을 그 알림에 첨부
+        - complete=true 면 아직 완료가 아닌 건은 완료로 바꿔서 함께 처리
+       ================================================================== */
+    @PostMapping("/batch-notify-tracking")
+    public BatchNotifyResult batchNotifyTracking(@RequestBody BatchNotifyDto body) {
+        List<String> srNos = (body.srNos() == null) ? List.of() : body.srNos();
+        if (srNos.isEmpty()) return new BatchNotifyResult(false, 0, false, null, List.of(), "보낼 요청건이 없어요.");
+
+        List<String> lines = new java.util.ArrayList<>();
+        List<String> skipped = new java.util.ArrayList<>();
+        List<String> sent = new java.util.ArrayList<>();
+        ShipmentRequest head = null;
+
+        for (String sr : srNos) {
+            var found = repo.findBySrNo(sr);
+            if (found.isEmpty()) { skipped.add(sr); continue; }
+            ShipmentRequest r = found.get();
+            if (head == null) head = r;
+
+            // 완료 처리까지 함께 요청받았으면, 아직 완료가 아닌 건만 완료로 바꿉니다.
+            if (Boolean.TRUE.equals(body.complete()) && !"완료".equals(r.getStatus())) {
+                r = service.updateStatus(sr, "완료");
+            }
+            String t = service.trackingsText(r);
+            lines.add(r.getSrNo() + (t == null || t.isBlank() ? " · 송장번호 없음" : " · " + t.replace("\n", " / ")));
+
+            // 개별 알림 버튼이 다시 눌리지 않도록 "알림 보냄" 표시를 남깁니다.
+            service.markTrackingNotified(sr);
+            service.markNotified(sr);
+            sent.add(sr);
+        }
+
+        if (head == null) {
+            return new BatchNotifyResult(false, 0, false, null, skipped, "요청건을 찾지 못했어요.");
+        }
+
+        // Slack 대상 찾기 — 요청서에 저장된 채널/유저가 없으면 이름으로 주소록을 뒤집니다.
+        String channelId = head.getSlackChannelId();
+        String userId = head.getSlackUserId();
+        if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
+            var s = staffDirectory.lookup(head.getRequester());
+            if (s != null) {
+                userId = s.getSlackUserId();
+                if (s.getSlackChannelId() != null && !s.getSlackChannelId().isBlank()) channelId = s.getSlackChannelId();
+            }
+        }
+        if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
+            return new BatchNotifyResult(false, sent.size(), false, head.getRequester(), skipped,
+                    head.getRequester() + "님의 Slack 주소를 찾지 못했어요. 요청건은 완료 처리됐지만 알림은 못 보냈어요.");
+        }
+
+        byte[] file = null;
+        String fileName = body.fileName();
+        if (body.fileBase64() != null && !body.fileBase64().isBlank()) {
+            try {
+                file = java.util.Base64.getDecoder().decode(body.fileBase64().trim());
+                if (file.length > 12 * 1024 * 1024) file = null;   // 12MB 넘으면 첨부 생략
+            } catch (Exception e) {
+                file = null;
+            }
+        }
+
+        boolean fileAttached = slackService.notifyBatchShipment(
+                channelId, userId, head.getRequester(), lines, fileName, file);
+
+        String msg = sent.size() + "건 알림을 한 번에 보냈어요."
+                + (fileAttached ? " (엑셀 파일 첨부 완료)" : " (엑셀 파일은 첨부하지 못했어요 — 봇 권한 files:write 확인 필요)")
+                + (skipped.isEmpty() ? "" : " 찾지 못한 요청: " + String.join(", ", skipped));
+        return new BatchNotifyResult(true, sent.size(), fileAttached, head.getRequester(), skipped, msg);
+    }
+
+    /** srNos: 보낼 요청번호들 / fileName·fileBase64: 첨부할 엑셀 / complete: 완료 처리까지 함께 할지 */
+    public record BatchNotifyDto(List<String> srNos, String fileName, String fileBase64, Boolean complete) {}
+
+    public record BatchNotifyResult(boolean ok, int count, boolean fileAttached,
+                                    String requester, List<String> skipped, String message) {}
 
     /**
      * 이지어드민 관리번호(seq)를 연결. 이후 백그라운드 작업이 주기적으로 확인해서,
