@@ -208,22 +208,60 @@ public class SlackService {
     }
 
     /**
-     * 물류팀이 송장번호를 등록했을 때, Slack으로 접수됐던 요청이면 요청자에게 바로 알려줍니다.
+     * 요청자에게 보낼 알림 한 줄을 만듭니다 — 예: "08/27_장수진_522559491826"
+     *
+     * 예전에는 "SR-0183 · CJ대한통운 · 1213123123" 처럼 요청번호로만 보내서,
+     * 요청자가 어느 건인지 확인하러 대장부에 다시 들어와야 했습니다.
+     * 실제 출고일 · 수령자 이름 · 송장번호를 한 줄에 담아 그 수고를 없앱니다.
+     * 한 요청에 송장이 여러 개면 줄도 여러 개가 됩니다.
      */
+    public List<String> shipmentLines(LocalDate shipDate, String receiverName, String trackingsText) {
+        String d = (shipDate == null) ? ""
+                : shipDate.format(java.time.format.DateTimeFormatter.ofPattern("MM/dd"));
+        String who = (receiverName == null || receiverName.isBlank()) ? "수령자 미기재" : receiverName.trim();
+        List<String> out = new ArrayList<>();
+        if (trackingsText != null && !trackingsText.isBlank()) {
+            for (String raw : trackingsText.split("\n")) {
+                String line = raw.trim();
+                if (line.isEmpty()) continue;
+                // trackingsText 는 "택배사 · 번호" 형태입니다. 뒤쪽 번호만 뽑습니다.
+                int p = line.lastIndexOf('·');
+                String no = (p >= 0 ? line.substring(p + 1) : line).trim();
+                if (!no.isEmpty()) out.add(oneShipmentLine(d, who, no));
+            }
+        }
+        if (out.isEmpty()) out.add(oneShipmentLine(d, who, "송장번호 없음"));
+        return out;
+    }
+
+    private String oneShipmentLine(String d, String who, String no) {
+        return (d.isEmpty() ? "" : d + "_") + who + "_" + no;
+    }
+
+    /** 이전 호출부 호환용 — 출고일·수령자를 모르면 이 형태로도 부를 수 있습니다. */
     public void notifyTracking(String channelId, String userId, String srNo, String trackingsText, String label) {
+        notifyTracking(channelId, userId, srNo, trackingsText, label, null, null);
+    }
+
+    /**
+     * 물류팀이 송장번호를 등록했을 때 요청자에게 바로 알려줍니다.
+     * shipDate·receiverName 을 주면 "08/27_장수진_522559491826" 형식으로 나갑니다.
+     */
+    public void notifyTracking(String channelId, String userId, String srNo, String trackingsText, String label,
+                               LocalDate shipDate, String receiverName) {
         String title = (label == null || label.isBlank()) ? srNo : label;
-        // 여러 송장을 줄바꿈(\n)으로 이어붙인 문자열을 그대로 보여줍니다. JSON 안전하게 이스케이프하되 줄바꿈은 유지.
-        String tt = (trackingsText == null || trackingsText.isBlank()) ? "-" : trackingsText;
-        String ttSafe = tt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", " ").replace("\n", "\\n");
+        String body = (receiverName != null && !receiverName.isBlank())
+                ? String.join("\n", shipmentLines(shipDate, receiverName, trackingsText))
+                : ((trackingsText == null || trackingsText.isBlank()) ? "-" : trackingsText);
+        String safe = body.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", " ").replace("\n", "\\n");
         String blocks = ("""
                 [
                   {"type":"section","text":{"type":"mrkdwn","text":
-                    "*LABEL* 송장이 등록되었습니다. :package:\\nTRACKINGS\\n_접수번호 SR_NO_"}}
+                    "송장이 등록되었습니다. :package:\\nTRACKINGS\\n_접수번호 SR_NO_"}}
                 ]
                 """)
-                .replace("LABEL", esc(title))
                 .replace("SR_NO", esc(srNo))
-                .replace("TRACKINGS", ttSafe);
+                .replace("TRACKINGS", safe);
 
         String target = (userId != null && !userId.isBlank()) ? userId : channelId;
         if (target == null || target.isBlank()) return;
@@ -817,13 +855,20 @@ public class SlackService {
     // ------------------------------------------------------------------
 
     /**
-     * @param lines 요청건별 한 줄 요약 (예: "SR-0168 · CJ대한통운 522559491826")
+     * @param lines 요청건별 한 줄 요약 (예: "08/27_장수진_522559491826")
      * @param fileName 첨부할 엑셀 파일명 (null이면 텍스트만)
      * @param file     첨부할 엑셀 바이트 (null이면 텍스트만)
      * @return 파일까지 첨부해서 보냈으면 true, 텍스트만 보냈으면 false
      */
+    /** 이전 호출부 호환용 — 건수를 따로 주지 않으면 줄 수를 건수로 봅니다. */
     public boolean notifyBatchShipment(String channelId, String userId, String requester,
                                        List<String> lines, String fileName, byte[] file) {
+        return notifyBatchShipment(channelId, userId, requester, lines,
+                lines == null ? 0 : lines.size(), fileName, file);
+    }
+
+    public boolean notifyBatchShipment(String channelId, String userId, String requester,
+                                       List<String> lines, int requestCount, String fileName, byte[] file) {
         String rawTarget = (userId != null && !userId.isBlank()) ? userId : channelId;
         if (rawTarget == null || rawTarget.isBlank()) {
             log.warn("[Slack] 일괄 알림 대상 없음 — requester={}", requester);
@@ -834,24 +879,26 @@ public class SlackService {
 
         String who = (requester == null || requester.isBlank()) ? "요청" : requester + "님";
         StringBuilder sb = new StringBuilder();
-        sb.append("*").append(who).append(" 요청 ").append(lines.size()).append("건 출고가 완료되었습니다.* :package:\n");
+        sb.append("*").append(who).append(" 요청 ").append(requestCount).append("건 출고가 완료되었습니다.* :package:\n");
         for (String l : lines) sb.append("• ").append(l).append("\n");
+        String base = sb.toString();
         boolean withFile = (file != null && file.length > 0 && fileName != null && !fileName.isBlank());
-        sb.append(withFile
-                ? "\n첨부한 엑셀 파일에 주문건별 송장번호가 함께 기입돼 있어요."
-                : "\n송장번호는 위 목록을 확인해 주세요.");
-        String text = sb.toString();
 
+        // ⚠ 파일이 '실제로' 붙었을 때만 첨부했다고 말합니다.
+        //   예전에는 업로드가 실패해도 "첨부한 엑셀 파일에…" 문장을 그대로 보내서,
+        //   요청자가 있지도 않은 파일을 찾게 만들었습니다.
         if (withFile) {
-            if (uploadFileToChannel(target, fileName, file, text)) return true;
-            log.warn("[Slack] 파일 첨부 실패 — 텍스트 알림만 보냅니다. (봇에 files:write 권한이 있는지 확인해 주세요)");
+            String withFileText = base + "\n첨부한 엑셀 파일에 주문건별 송장번호가 함께 기입돼 있어요.";
+            if (uploadFileToChannel(target, fileName, file, withFileText)) return true;
+            log.warn("[Slack] 파일 첨부 실패 — 파일 없이 텍스트만 보냅니다. (봇에 files:write 권한이 있는지 확인해 주세요)");
         }
 
         // 파일 없이(또는 첨부 실패 시) 텍스트만 — 줄바꿈을 유지해 JSON으로 안전하게 넣습니다.
+        String text = base + "\n송장번호는 위 목록을 확인해 주세요.";
         String safe = text.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\r", " ").replace("\n", "\\n");
         String blocks = "[{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"" + safe + "\"}}]";
-        postMessage(target, null, who + " 요청 " + lines.size() + "건 출고가 완료되었습니다.", blocks);
+        postMessage(target, null, who + " 요청 " + requestCount + "건 출고가 완료되었습니다.", blocks);
         return false;
     }
 
