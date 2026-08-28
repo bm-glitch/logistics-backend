@@ -209,13 +209,25 @@ public class ShipmentRequestController {
      * 물류팀이 준비된 시점에 직접 눌러야만 Slack 알림이 나갑니다.
      */
     @PostMapping("/{sr}/notify-tracking")
-    public RequestView notifyTracking(@PathVariable String sr) {
-        ShipmentRequest r = service.markTrackingNotified(sr);
+    public NotifyTrackingResult notifyTracking(@PathVariable String sr) {
+        ShipmentRequest before = repo.findBySrNo(sr)
+                .orElseThrow(() -> new jakarta.persistence.EntityNotFoundException("요청 없음: " + sr));
         // 대장부·모바일로 접수된 요청은 요청서에 Slack 정보가 없으므로, 이름으로 주소록을 조회합니다.
         // (예전에는 slackChannelId 가 있는 건만 알림이 나가서, 대장부 접수 건은 조용히 누락됐습니다)
-        String[] t = slackTargetOf(r);
+        String[] t = slackTargetOf(before);
         final String ch = t[0], uid = t[1];
-        if ((ch != null && !ch.isBlank()) || (uid != null && !uid.isBlank())) {
+        boolean hasTarget = (ch != null && !ch.isBlank()) || (uid != null && !uid.isBlank());
+
+        if (!hasTarget) {
+            // 대상을 못 찾으면 "알림 보냄" 표시를 절대 남기지 않습니다 — 안 그러면 이 요청자는
+            // 나중에 Slack 주소가 확보돼도 재전송 버튼이 막혀서 영영 알림을 못 받습니다.
+            return new NotifyTrackingResult(RequestView.from(before), false,
+                    before.getRequester() + "님의 Slack 주소를 찾지 못했어요. "
+                            + "이 요청자는 Slack 봇으로 접수된 적이 없어서 주소록에 없습니다.");
+        }
+
+        ShipmentRequest r = service.markTrackingNotified(sr);
+        {
             String trackingsText = service.trackingsText(r);
             java.time.LocalDate shipDate = shipDateOf(r);
             String label = slackLabel(r);
@@ -224,8 +236,11 @@ public class ShipmentRequestController {
             slackService.async(() -> slackService.notifyTracking(
                     ch, uid, srNo, trackingsText, label, shipDate, recvName));
         }
-        return RequestView.from(r);
+        return new NotifyTrackingResult(RequestView.from(r), true, "송장 알림을 보냈어요.");
     }
+
+    /** notified: 실제로 Slack 대상을 찾아서 보냈는지. false 면 view 는 바뀌지 않은 상태 그대로입니다. */
+    public record NotifyTrackingResult(RequestView view, boolean notified, String message) {}
 
     public record TrackingDto(String carrier, String trackingNo, java.util.List<java.util.Map<String, String>> trackings) {}
 
@@ -241,42 +256,55 @@ public class ShipmentRequestController {
         List<String> srNos = (body.srNos() == null) ? List.of() : body.srNos();
         if (srNos.isEmpty()) return new BatchNotifyResult(false, 0, false, null, List.of(), "보낼 요청건이 없어요.");
 
-        List<String> lines = new java.util.ArrayList<>();
+        // 1단계: 요청건을 찾기만 합니다. 여기서는 아직 "완료 처리"도 "알림 보냄" 표시도 하지 않습니다.
+        List<ShipmentRequest> found = new java.util.ArrayList<>();
         List<String> skipped = new java.util.ArrayList<>();
-        List<String> sent = new java.util.ArrayList<>();
-        ShipmentRequest head = null;
-
         for (String sr : srNos) {
-            var found = repo.findBySrNo(sr);
-            if (found.isEmpty()) { skipped.add(sr); continue; }
-            ShipmentRequest r = found.get();
-            if (head == null) head = r;
+            var r = repo.findBySrNo(sr);
+            if (r.isEmpty()) skipped.add(sr); else found.add(r.get());
+        }
+        if (found.isEmpty()) {
+            return new BatchNotifyResult(false, 0, false, null, skipped, "요청건을 찾지 못했어요.");
+        }
 
-            // 완료 처리까지 함께 요청받았으면, 아직 완료가 아닌 건만 완료로 바꿉니다.
+        // 2단계: Slack 대상부터 먼저 확인합니다 — 대상이 없으면 "보냈다"는 표시를 절대 남기지 않습니다.
+        // (예전엔 이 확인보다 먼저 markNotified 를 찍어서, 슬랙 주소를 못 찾은 사람도 "전송됨"으로
+        //  잘못 표시되고 재전송 버튼이 막혀버리는 사고가 있었습니다. Slack 앱을 거치지 않고 대장부
+        //  링크로 직접 들어와 접수된 요청자는 주소록에 없어서 이 케이스에 걸립니다.)
+        ShipmentRequest head = found.get(0);
+        String[] target = slackTargetOf(head);
+        String channelId = target[0];
+        String userId = target[1];
+        if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
+            // 완료 처리는 그대로 해 드립니다 — 배송 자체는 실제로 나갔으니까요.
+            // 다만 "알림 보냄" 표시는 남기지 않아서, 슬랙 주소를 나중에 확보하면 재전송 버튼으로 다시 보낼 수 있습니다.
+            if (Boolean.TRUE.equals(body.complete())) {
+                for (ShipmentRequest r : found) {
+                    if (!"완료".equals(r.getStatus())) service.updateStatus(r.getSrNo(), "완료");
+                }
+            }
+            return new BatchNotifyResult(false, found.size(), false, head.getRequester(), skipped,
+                    head.getRequester() + "님의 Slack 주소를 찾지 못했어요. 완료 처리는 됐지만 알림은 못 보냈어요 — "
+                            + "이 요청자는 Slack 봇으로 접수된 적이 없어서 주소록에 없습니다. "
+                            + "요청자가 Slack에서 한 번 접촉하거나, 주소록에 수동으로 등록해 주세요.");
+        }
+
+        // 3단계: 대상이 확인됐을 때만 완료 처리 + "알림 보냄" 표시 + 알림 문구 생성.
+        List<String> lines = new java.util.ArrayList<>();
+        List<String> sent = new java.util.ArrayList<>();
+        for (ShipmentRequest r0 : found) {
+            ShipmentRequest r = r0;
             if (Boolean.TRUE.equals(body.complete()) && !"완료".equals(r.getStatus())) {
-                r = service.updateStatus(sr, "완료");
+                r = service.updateStatus(r.getSrNo(), "완료");
             }
             // "08/27_장수진_522559491826" 형식. 송장이 여러 개면 줄도 여러 개가 됩니다.
             String t = service.trackingsText(r);
             lines.addAll(slackService.shipmentLines(shipDateOf(r), r.getReceiverName(), t));
 
             // 개별 알림 버튼이 다시 눌리지 않도록 "알림 보냄" 표시를 남깁니다.
-            service.markTrackingNotified(sr);
-            service.markNotified(sr);
-            sent.add(sr);
-        }
-
-        if (head == null) {
-            return new BatchNotifyResult(false, 0, false, null, skipped, "요청건을 찾지 못했어요.");
-        }
-
-        // Slack 대상 찾기 — 요청서에 저장된 채널/유저가 없으면 이름으로 주소록을 뒤집니다.
-        String[] target = slackTargetOf(head);
-        String channelId = target[0];
-        String userId = target[1];
-        if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
-            return new BatchNotifyResult(false, sent.size(), false, head.getRequester(), skipped,
-                    head.getRequester() + "님의 Slack 주소를 찾지 못했어요. 요청건은 완료 처리됐지만 알림은 못 보냈어요.");
+            service.markTrackingNotified(r.getSrNo());
+            service.markNotified(r.getSrNo());
+            sent.add(r.getSrNo());
         }
 
         byte[] file = null;
