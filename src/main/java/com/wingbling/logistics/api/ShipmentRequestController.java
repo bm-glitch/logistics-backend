@@ -75,9 +75,10 @@ public class ShipmentRequestController {
     public RequestView updateProductStatus(@PathVariable String sr, @RequestBody ProductStatusDto body) {
         ShipmentRequest r = service.updateProductStatus(sr, body.action(), body.reason(), body.indexes());
         boolean notify = body.action() != null && !"clear".equals(body.action());
-        if (notify && r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
+        String[] pt = slackTargetOf(r);
+        if (notify && ((pt[0] != null && !pt[0].isBlank()) || (pt[1] != null && !pt[1].isBlank()))) {
             slackService.async(() -> slackService.notifyProductIssue(
-                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), body.action(), body.reason(), slackLabel(r)));
+                    pt[0], pt[1], r.getSrNo(), body.action(), body.reason(), slackLabel(r)));
         }
         return RequestView.from(r);
     }
@@ -95,9 +96,10 @@ public class ShipmentRequestController {
     @PostMapping("/{sr}/notify")
     public RequestView notify(@PathVariable String sr) {
         ShipmentRequest r = service.markNotified(sr);
-        if (r.getSlackChannelId() != null && !r.getSlackChannelId().isBlank()) {
+        String[] nt = slackTargetOf(r);
+        if ((nt[0] != null && !nt[0].isBlank()) || (nt[1] != null && !nt[1].isBlank())) {
             slackService.async(() -> slackService.notifyCompletion(
-                    r.getSlackChannelId(), r.getSlackUserId(), r.getSrNo(), slackLabel(r)));
+                    nt[0], nt[1], r.getSrNo(), slackLabel(r)));
         }
         return RequestView.from(r);
     }
@@ -116,20 +118,22 @@ public class ShipmentRequestController {
         return java.time.LocalDate.now();
     }
 
-    /** 요청서에 Slack 정보가 없으면 이름으로 주소록을 뒤져 대상을 찾습니다. [채널, 유저] */
+    /** '요청자' 이름으로 주소록을 먼저 찾아 대상을 정합니다. [채널, 유저]
+     *  ⚠ 요청서에 저장된 Slack 정보(slackChannelId/slackUserId)를 그대로 믿지 않습니다 —
+     *  그 값은 "이 요청을 실제로 Slack에서 접수한 사람"일 뿐이라, 다른 사람(예: 물류팀)이
+     *  대신 접수해주면 요청자가 아니라 대신 접수한 그 사람의 Slack ID가 남습니다.
+     *  실제 사고: 타팀 직원이 업로드 오류로 요청을 못 올려서 물류팀이 대신 접수했는데,
+     *  나중에 송장/완료 알림이 그 요청자가 아니라 대신 접수해 준 물류팀에게 가버렸습니다.
+     *  그래서 항상 '요청자' 이름으로 먼저 찾고, 이름으로 못 찾을 때만(주소록 미등록 등)
+     *  요청서에 저장된 정보를 예비로 씁니다. */
     private String[] slackTargetOf(ShipmentRequest r) {
-        String channelId = r.getSlackChannelId();
-        String userId = r.getSlackUserId();
-        if ((channelId == null || channelId.isBlank()) && (userId == null || userId.isBlank())) {
-            var st = staffDirectory.lookup(r.getRequester());
-            if (st != null) {
-                userId = st.getSlackUserId();
-                if (st.getSlackChannelId() != null && !st.getSlackChannelId().isBlank()) {
-                    channelId = st.getSlackChannelId();
-                }
-            }
+        var st = staffDirectory.lookup(r.getRequester());
+        if (st != null && st.getSlackUserId() != null && !st.getSlackUserId().isBlank()) {
+            String channelId = (st.getSlackChannelId() != null && !st.getSlackChannelId().isBlank())
+                    ? st.getSlackChannelId() : null;
+            return new String[]{ channelId, st.getSlackUserId() };
         }
-        return new String[]{ channelId, userId };
+        return new String[]{ r.getSlackChannelId(), r.getSlackUserId() };
     }
 
     /** 요청자가 내용을 수정. 이미 진행중/완료였다면 물류팀 알림이 자동으로 남습니다.
