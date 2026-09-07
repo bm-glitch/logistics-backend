@@ -95,7 +95,9 @@ public class ShipmentRequestService {
         //  · 대장부/모바일 요청(slackUserId 없음) → 주소록에서 SlackID를 찾아 붙여 알림이 가게 함
         try {
             if (dto.slackUserId() != null && !dto.slackUserId().isBlank()) {
-                staffDirectory.remember(dto.requester(), dto.slackUserId(), dto.slackChannelId());
+                // rememberIfAbsent: 이미 등록된 이름이면 자동으로 덮어쓰지 않습니다.
+                // (다른 사람이 대신 접수해주면서 그 사람 Slack ID로 이름이 바뀌어버리는 사고 방지)
+                staffDirectory.rememberIfAbsent(dto.requester(), dto.slackUserId(), dto.slackChannelId());
             } else {
                 var s = staffDirectory.lookup(dto.requester());
                 if (s != null && s.getSlackUserId() != null && !s.getSlackUserId().isBlank()) {
