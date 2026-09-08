@@ -25,6 +25,7 @@ public class ShipmentRequestService {
     private final ShipmentRequestRepository repo;
     private final RequestChangeLogRepository changeLogRepo;
     private final StaffDirectoryService staffDirectory;   // 요청자 Slack 주소록
+    private final EzAdminService ezAdminService;           // 재고 부족 자동 대조(접수 시점 실시간 재고 조회)
 
     // 상품 목록(products_json) 파싱/직렬화에 사용
     private static final ObjectMapper OM = new ObjectMapper();
@@ -109,7 +110,94 @@ public class ShipmentRequestService {
             }
         } catch (Exception ignore) { /* 주소록 연동 실패해도 요청 저장은 정상 진행 */ }
 
+        applyStockCheck(r);
+
         return repo.save(r);
+    }
+
+    /* =====================================================================
+     * 재고 부족 대응 — 출고요청 접수 시점에 이지어드민 실시간 재고와 자동 대조합니다.
+     *   재고부족수량 = max(요청수량 - 출고가능수량, 0)
+     * 이지어드민 조회 자체가 실패하면 "재고가 없다"고 오판하면 절대 안 되므로
+     * stockStatus="확인실패" 로 명확히 구분합니다(재고부족과는 다른 상태).
+     * ===================================================================== */
+    private record StockCheckLine(String code, String name, String option, int qty,
+                                   Integer available, int shortage, boolean checkFailed) {}
+
+    @SuppressWarnings("unchecked")
+    private void applyStockCheck(ShipmentRequest r) {
+        // 안전재고(재고확보) 요청은 "지금 출고할 재고"를 다투는 게 아니라 정반대 성격이라 대상에서 뺍니다.
+        if ("안전재고".equals(r.getRequestType())) return;
+
+        List<Map<String, Object>> products;
+        try {
+            String pj = (r.getProductsJson() == null || r.getProductsJson().isBlank()) ? "[]" : r.getProductsJson();
+            products = OM.readValue(pj, new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) { products = new ArrayList<>(); }
+        // 상품 여러 줄 폼을 안 쓰고 단일 sku/수량으로만 접수된 경우(Slack 등) 대비한 예비 경로
+        if (products.isEmpty() && r.getSku() != null && !r.getSku().isBlank() && r.getQuantity() != null) {
+            Map<String, Object> p = new java.util.LinkedHashMap<>();
+            p.put("code", r.getSku()); p.put("name", r.getItemName());
+            p.put("option", r.getOptionValue()); p.put("qty", r.getQuantity());
+            products = List.of(p);
+        }
+
+        List<String> codes = products.stream()
+                .map(p -> String.valueOf(p.getOrDefault("code", "")).trim())
+                .filter(c -> !c.isBlank() && !"null".equals(c))
+                .distinct().toList();
+
+        // 상품코드가 하나도 없으면(코드 미매칭 상태) 대조 자체가 불가능 — "확인실패"로 남겨서
+        // "재고가 없다"는 오해 없이 사람이 직접 확인하도록 안내합니다.
+        if (codes.isEmpty()) {
+            r.setStockStatus("확인실패");
+            r.setStockCheckJson("[]");
+            r.setShortageQty(0);
+            r.setStockCheckedAt(LocalDateTime.now());
+            return;
+        }
+
+        Map<String, EzAdminService.StockLine> stock;
+        boolean lookupFailed;
+        try {
+            stock = ezAdminService.lookup(codes);
+            // 코드가 있는데 결과가 전부 비어 있으면 조회 자체가 실패했을 가능성이 높습니다
+            // (인증키 미설정, 이지어드민 장애 등) — "재고 0"과 반드시 구분합니다.
+            lookupFailed = stock.isEmpty();
+        } catch (Exception e) {
+            stock = Map.of();
+            lookupFailed = true;
+        }
+
+        List<StockCheckLine> lines = new ArrayList<>();
+        int totalShortage = 0;
+        boolean anyFailed = false;
+        for (Map<String, Object> p : products) {
+            String code = String.valueOf(p.getOrDefault("code", "")).trim();
+            String name = String.valueOf(p.getOrDefault("name", "")).trim();
+            String option = p.get("option") == null ? "" : String.valueOf(p.get("option"));
+            int qty; try { qty = Integer.parseInt(String.valueOf(p.getOrDefault("qty", 1)).replaceAll("[^0-9-]", "")); }
+            catch (Exception e) { qty = 1; }
+
+            boolean failed = code.isBlank() || lookupFailed || !stock.containsKey(code)
+                    || stock.get(code).available() == null;
+            Integer available = failed ? null : stock.get(code).available();
+            int shortage = (!failed && available != null) ? Math.max(qty - available, 0) : 0;
+            if (failed) anyFailed = true;
+            totalShortage += shortage;
+            lines.add(new StockCheckLine(code, name, option, qty, available, shortage, failed));
+        }
+
+        String status;
+        if (anyFailed && totalShortage == 0) status = "확인실패";           // 전부(또는 일부) 조회 실패, 그 외엔 부족 없음
+        else if (totalShortage > 0) status = "재고부족";                    // 실패건이 섞여 있어도 실제 부족이 확인됐으면 부족 우선 표시
+        else status = "정상";
+
+        try { r.setStockCheckJson(OM.writeValueAsString(lines)); } catch (Exception e) { r.setStockCheckJson("[]"); }
+        r.setStockStatus(status);
+        r.setShortageQty(totalShortage);
+        r.setStockCheckedAt(LocalDateTime.now());
+        r.setCxStatus("재고부족".equals(status) ? "확인전" : null);
     }
 
     /** 이미 진행중/완료인 건이 요청자에 의해 건드려졌는지 표시할지 판단하는 기준 */
@@ -166,6 +254,22 @@ public class ShipmentRequestService {
         r.setReceiverAddress(dto.receiverAddress());
         r.setReceiverMessage(dto.receiverMessage());
         r.setBillingType(dto.billingType());
+
+        // 상품·수량이 바뀌면 재고 부족 여부도 다시 확인합니다. 결과가 실제로 달라졌으면
+        // (예: 전엔 정상이었는데 이번엔 부족, 또는 부족수량 자체가 바뀜) CX팀이 다시 봐야 하므로
+        // 알림을 다시 보낼 수 있도록 '알림 보냄' 표시와 처리 상태를 초기화합니다.
+        // 단순 조회·새로고침은 이 경로를 안 타므로 중복 알림 걱정은 없습니다.
+        String prevCheckJson = r.getStockCheckJson();
+        applyStockCheck(r);
+        boolean resultChanged = !java.util.Objects.equals(prevCheckJson, r.getStockCheckJson());
+        if (resultChanged && "재고부족".equals(r.getStockStatus())) {
+            r.setCxNotificationSent(false);
+            r.setCxNotificationSentAt(null);
+            r.setCxStatus("확인전");
+            r.setCxHandledBy(null);
+            r.setCxHandledAt(null);
+            r.setCxMemo(null);
+        }
 
         logChange(srNo, "수정", actor, reason, beforeSnap, snapshot(r));
         return r;
@@ -383,7 +487,36 @@ public class ShipmentRequestService {
     public ShipmentRequest changeRequestType(String srNo, String type) {
         ShipmentRequest r = repo.findBySrNo(srNo)
                 .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
-        r.setRequestType(type == null || type.isBlank() ? "출고요청" : type);
+        String t = (type == null || type.isBlank()) ? "출고요청" : type;
+        r.setRequestType(t);
+        // 접수 시점엔 항상 '출고요청' 기본값이라 재고 대조가 먼저 돌고 난 뒤에 안전재고로
+        // 바뀌는 경우가 있습니다 — 안전재고는 재고부족 대상이 아니므로 그때 지운 걸로 되돌립니다.
+        if ("안전재고".equals(t)) {
+            r.setStockStatus(null);
+            r.setStockCheckJson(null);
+            r.setShortageQty(null);
+            r.setCxStatus(null);
+        }
+        return r;
+    }
+
+    /** CX팀 처리 상태 갱신 — 확인중/완료로 바꾸면서 담당자·메모를 남깁니다. */
+    public ShipmentRequest updateCxStatus(String srNo, String cxStatus, String handledBy, String memo) {
+        ShipmentRequest r = repo.findBySrNo(srNo)
+                .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
+        r.setCxStatus(cxStatus);
+        if (handledBy != null && !handledBy.isBlank()) r.setCxHandledBy(handledBy);
+        if (memo != null) r.setCxMemo(memo);
+        if ("완료".equals(cxStatus)) r.setCxHandledAt(LocalDateTime.now());
+        return r;
+    }
+
+    /** CX Slack 알림을 보낸 직후 표시 — 같은 건에 알림이 중복으로 나가지 않도록 막습니다. */
+    public ShipmentRequest markCxNotified(String srNo) {
+        ShipmentRequest r = repo.findBySrNo(srNo)
+                .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
+        r.setCxNotificationSent(true);
+        r.setCxNotificationSentAt(LocalDateTime.now());
         return r;
     }
 
