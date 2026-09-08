@@ -25,7 +25,18 @@ public class ShipmentRequestController {
     /** 접수 창구. */
     @PostMapping
     public RequestView create(@Valid @RequestBody CreateRequestDto dto) {
-        return RequestView.from(service.create(dto));
+        ShipmentRequest r = service.create(dto);
+        maybeNotifyCxShortage(r);
+        return RequestView.from(r);
+    }
+
+    /** 재고 부족이고, 아직 CX팀에 알림을 안 보낸 건이면 지금 보내고 '보냄' 표시를 남깁니다.
+     *  이미 보낸 건은 조용히 지나가서 조회·새로고침만으로는 절대 중복 발송되지 않습니다. */
+    private void maybeNotifyCxShortage(ShipmentRequest r) {
+        if (!"재고부족".equals(r.getStockStatus())) return;
+        if (r.isCxNotificationSent()) return;
+        slackService.async(() -> slackService.notifyCxShortage(r));
+        service.markCxNotified(r.getSrNo());
     }
 
     /** 대시보드가 화면 그릴 때 호출. scope로 통합/개인 필터링. */
@@ -145,8 +156,18 @@ public class ShipmentRequestController {
         ShipmentRequest r = service.edit(sr, dto, changedBy, changeReason);
         final String label = slackLabel(r);
         slackService.async(() -> slackService.notifyChangeToLogistics(sr, "수정", changedBy, changeReason, label));
+        maybeNotifyCxShortage(r);   // 수정으로 재고 부족 상황이 새로 생겼거나 바뀌었으면 CX팀에 다시 알림
         return RequestView.from(r);
     }
+
+    /** CX팀 처리 상태 갱신 — 확인전/확인중/완료. 담당자·메모도 함께 저장합니다. */
+    @PatchMapping("/{sr}/cx-status")
+    public RequestView updateCxStatus(@PathVariable String sr, @RequestBody CxStatusDto body) {
+        ShipmentRequest r = service.updateCxStatus(sr, body.cxStatus(), body.handledBy(), body.memo());
+        return RequestView.from(r);
+    }
+
+    public record CxStatusDto(String cxStatus, String handledBy, String memo) {}
 
     /** 요청자가 취소. 상태를 '취소'로 바꿀 뿐 데이터는 남깁니다.
      *  changedBy(변경자)·changeReason(사유)는 변경 이력에 기록됩니다. */
