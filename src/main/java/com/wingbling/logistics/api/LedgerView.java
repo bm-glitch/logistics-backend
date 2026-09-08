@@ -23,7 +23,17 @@ public record LedgerView(
         String ezadminSeq,                            // 연결된 이지어드민 관리번호 (있으면 자동확인 대상)
         boolean hasPendingAlert,                      // 물류팀이 확인해야 할 요청자 변경건인지
         String requestType,                           // 출고요청 | 재고확보 | 안전재고
-        String memo                                   // 물류팀 특이사항 메모(진행상황 모니터링용)
+        String memo,                                  // 물류팀 특이사항 메모(진행상황 모니터링용)
+
+        // ---- 재고 부족 대응 ----
+        String stockStatus,          // 정상 | 재고부족 | 확인실패 | null(체크 안 함)
+        String stockCheckJson,       // 상품별 대조 결과 — 클라이언트에서 JSON.parse
+        Integer shortageQty,         // 부족수량 합계
+        String cxStatus,             // 확인전 | 확인중 | 완료 (재고부족일 때만 의미 있음)
+        boolean cxNotificationSent,
+        String cxHandledBy,
+        String cxHandledAt,
+        String cxMemo
 ) {
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
@@ -67,7 +77,15 @@ public record LedgerView(
                 r.getEzadminSeq(),
                 r.getRequesterModifiedAt() != null && r.getAlertAcknowledgedAt() == null,
                 r.getRequestType() == null ? "출고요청" : r.getRequestType(),
-                r.getLogisticsMemo()
+                r.getLogisticsMemo(),
+                r.getStockStatus(),
+                r.getStockCheckJson() == null ? "[]" : r.getStockCheckJson(),
+                r.getShortageQty(),
+                r.getCxStatus(),
+                r.isCxNotificationSent(),
+                r.getCxHandledBy(),
+                r.getCxHandledAt() == null ? "" : r.getCxHandledAt().format(TS_FMT),
+                r.getCxMemo()
         );
     }
 }
