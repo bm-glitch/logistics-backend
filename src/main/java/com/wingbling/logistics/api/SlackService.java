@@ -2,6 +2,7 @@ package com.wingbling.logistics.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wingbling.logistics.domain.ShipmentRequest;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -115,6 +116,11 @@ public class SlackService {
             "U0BAC1G04TV", // 백화성
             "U017EUNG5B2"  // 배영환
     };
+
+    // 재고 부족 발생 시 CX 확인 요청을 받을 사람 — 이름으로 주소록(staff_slack)에서 찾습니다.
+    // (물류팀 목록과 달리 ID를 직접 박지 않는 이유: 이름 기준이면 그 사람 Slack ID가 나중에
+    //  바뀌어도 주소록만 갱신되면 되고, 여기 코드는 손댈 필요가 없습니다.)
+    private static final String[] CX_TEAM_NAMES = { "이성화" };
 
     public void handleAppMention(JsonNode event) {
         String channel = text(event, "channel");
@@ -817,6 +823,60 @@ public class SlackService {
         if (target == null || target.isBlank()) return;
         postMessage(target, null, title + " 일부 상품 " + kind, blocks);
     }
+
+    /**
+     * 재고 부족 자동 감지 → CX팀 확인 요청 알림.
+     * 호출부(ShipmentRequestController)에서 "재고부족" 상태 + 아직 안 보낸 건에 대해서만 부르므로
+     * 여기서는 중복 여부를 다시 따지지 않고 그대로 보냅니다.
+     */
+    public void notifyCxShortage(ShipmentRequest r) {
+        StringBuilder body = new StringBuilder();
+        body.append(":warning: *출고요청 재고 부족 / CX 확인 요청*\n\n");
+        body.append("*출고요청번호* ").append(esc(r.getSrNo())).append("\n");
+        body.append("*요청자* ").append(esc(nz(r.getRequester()))).append("\n");
+        body.append("*요청팀* ").append(esc(nz(r.getRequestTeam()))).append("\n");
+        body.append("*판매처* ").append(esc(nz(r.getChannels()))).append("\n");
+        body.append("*출고희망일* ").append(r.getWantDate() == null ? "-" : r.getWantDate().toString()).append("\n\n");
+
+        try {
+            JsonNode arr = om.readTree(r.getStockCheckJson() == null || r.getStockCheckJson().isBlank() ? "[]" : r.getStockCheckJson());
+            for (JsonNode line : arr) {
+                int shortage = line.path("shortage").asInt(0);
+                if (shortage <= 0) continue;   // 부족한 상품만 모아서 보여줍니다(정상 상품은 생략)
+                String name = line.path("name").asText("");
+                String option = line.path("option").asText("");
+                int qty = line.path("qty").asInt(0);
+                boolean failed = line.path("checkFailed").asBoolean(false);
+                String availTxt = failed ? "확인불가" : String.valueOf(line.path("available").asInt(0));
+                body.append("*상품명* ").append(esc(name));
+                if (!option.isBlank()) body.append(" (").append(esc(option)).append(")");
+                body.append("\n요청수량 ").append(qty).append("개 / 출고가능수량 ").append(availTxt)
+                        .append("개 / *재고부족수량 ").append(shortage).append("개*\n\n");
+            }
+        } catch (Exception e) {
+            log.error("[Slack] CX 알림용 재고 대조 결과 파싱 실패(sr={})", r.getSrNo(), e);
+        }
+
+        body.append("재고 부족으로 위 수량은 출고가 어렵습니다.\n");
+        body.append("해당 수량에 대한 취소 처리 및 고객 안내가 필요합니다.\n");
+        body.append("CX팀에서 확인 후 고객 안내 및 취소 처리 부탁드립니다.\n\n");
+        body.append("<").append(WEB_DASHBOARD_URL).append("?sr=").append(urlEnc(r.getSrNo())).append("|해당 요청 바로 보기>");
+
+        String textEscaped = body.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", " ").replace("\n", "\\n");
+        String blocks = "[{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"" + textEscaped + "\"}}]";
+        String fallback = "[재고 부족] " + r.getSrNo() + " · " + nz(r.getRequester()) + " — CX 확인 요청";
+
+        for (String name : CX_TEAM_NAMES) {
+            var st = staffDirectory.lookup(name);
+            if (st == null || st.getSlackUserId() == null || st.getSlackUserId().isBlank()) {
+                log.warn("[Slack] CX팀 '{}' 이(가) 주소록에 없어 재고부족 알림을 못 보냅니다 (sr={})", name, r.getSrNo());
+                continue;
+            }
+            postMessage(st.getSlackUserId(), null, fallback, blocks);
+        }
+    }
+
+    private static String nz(String s) { return (s == null || s.isBlank()) ? "-" : s; }
 
 /**
      * 요청이 '수정' 또는 '취소'되면 물류팀 3명에게 DM으로 알려줍니다.
