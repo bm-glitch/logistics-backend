@@ -162,6 +162,15 @@ public class ShipmentRequest {
     @Column(name = "slack_user_id", length = 20)
     private String slackUserId;
 
+    // ---- 묶음 등록 (한 파일로 여러 건을 한 번에 올렸을 때, 같은 묶음임을 표시) ----
+    /** 같은 업로드에서 나온 요청들끼리 공유하는 식별자. null이면 묶음이 아닌 낱개 요청. */
+    @Column(name = "batch_id", length = 40)
+    private String batchId;
+
+    /** 업로드한 사람이 붙인 묶음 이름(예: 파일명) — 목록에서 묶음 요약에 표시됩니다. */
+    @Column(name = "batch_label", length = 200)
+    private String batchLabel;
+
     // ---- 재고 부족 대응 (요청 접수 시 이지어드민 실시간 재고와 자동 대조) ----
     /** 정상 | 재고부족 | 확인실패(이지어드민 조회 실패 — 재고가 없다는 뜻이 절대 아님) | null(체크 안 함, 안전재고 등) */
     @Column(name = "stock_status", length = 20)
