@@ -566,3 +566,4 @@ public class ShipmentRequestService {
         return r; // dirty checking으로 커밋 시 자동 저장
     }
 }
+
