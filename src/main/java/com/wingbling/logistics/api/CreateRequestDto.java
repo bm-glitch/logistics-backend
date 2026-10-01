@@ -35,5 +35,9 @@ public record CreateRequestDto(
 
         // Slack에서 접수된 경우, 나중에 알림 보낼 때 씀 — 없으면 null (웹에서 온 요청)
         String slackChannelId,
-        String slackUserId
+        String slackUserId,
+
+        // 묶음 등록 — 한 파일로 여러 건을 한 번에 올렸을 때, 같은 묶음임을 표시 (없으면 낱개 요청)
+        String batchId,
+        String batchLabel
 ) {}
