@@ -595,7 +595,8 @@ public class SlackService {
                     rName, rPhone, rAddr, rMsg.isBlank() ? null : rMsg,
                     billing,
                     channel.isBlank() ? null : channel,
-                    userId.isBlank() ? null : userId
+                    userId.isBlank() ? null : userId,
+                    null, null                     // 묶음 등록 아님(Slack 개별 접수) — batchId/batchLabel 없음
             ));
             srNo = saved.getSrNo();
             // 요청일(접수한 날) 기준 이름표 — 예: 2026년08월10일_신혜인_김다래
