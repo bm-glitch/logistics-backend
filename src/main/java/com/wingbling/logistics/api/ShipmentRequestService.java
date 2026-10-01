@@ -90,6 +90,8 @@ public class ShipmentRequestService {
         r.setBillingType(dto.billingType());
         r.setSlackChannelId(dto.slackChannelId());
         r.setSlackUserId(dto.slackUserId());
+        r.setBatchId(dto.batchId());
+        r.setBatchLabel(dto.batchLabel());
 
         // 요청자 Slack 주소록 연동 (모든 요청 생성이 이 곳을 거칩니다):
         //  · Slack으로 온 요청(slackUserId 있음) → 이름↔SlackID를 자동 저장(학습)
