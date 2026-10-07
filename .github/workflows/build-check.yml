@@ -1,0 +1,28 @@
+name: 빌드 확인
+
+# master에 커밋이 올라올 때마다, Railway에 배포되기 전에 먼저 컴파일이 되는지 확인합니다.
+# 여기서 실패하면 커밋 화면에 빨간 X로 바로 표시되니, Railway 배포 실패를 몇 시간째 찾아다닐 필요가 없어집니다.
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+      - name: Gradle 캐시
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*') }}
+      - name: 컴파일만 확인 (테스트 제외 — 배포 빌드와 동일 조건)
+        run: ./gradlew clean compileJava -x test -x check --no-daemon
