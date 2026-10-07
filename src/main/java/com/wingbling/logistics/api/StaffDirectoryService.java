@@ -59,4 +59,26 @@ public class StaffDirectoryService {
         if (key.isEmpty()) return null;
         return repo.findByNameKey(key).orElse(null);
     }
+
+    /** 이 사람의 알림 그룹 태그(쉼표구분)를 설정/교체합니다. 예: setNotifyGroups("이성화", "CX") */
+    public boolean setNotifyGroups(String requester, String groups) {
+        StaffSlack s = lookup(requester);
+        if (s == null) return false;
+        s.setNotifyGroups((groups == null) ? null : groups.trim());
+        s.setUpdatedAt(LocalDateTime.now());
+        repo.save(s);
+        return true;
+    }
+
+    /** 특정 그룹 태그가 붙은 직원 전체를 찾습니다. 코드에 이름/ID를 박아두지 않고
+     *  "CX팀", "물류팀" 같은 알림 대상을 주소록에서 바로 찾을 때 씁니다. */
+    public java.util.List<StaffSlack> findByGroup(String group) {
+        String target = group == null ? "" : group.trim();
+        if (target.isEmpty()) return java.util.List.of();
+        return repo.findAll().stream()
+                .filter(s -> s.getNotifyGroups() != null
+                        && java.util.Arrays.stream(s.getNotifyGroups().split(","))
+                                .map(String::trim).anyMatch(target::equals))
+                .toList();
+    }
 }
