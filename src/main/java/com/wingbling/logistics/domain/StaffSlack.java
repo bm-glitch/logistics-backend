@@ -37,6 +37,11 @@ public class StaffSlack {
     @Column(name = "slack_channel_id", length = 20)
     private String slackChannelId;
 
+    /** 쉼표로 구분한 알림 그룹 태그 — 예: "CX,물류". 코드에 사람 이름을 박아두지 않고
+     *  이 태그로 "CX팀 전체", "물류팀 전체" 같은 알림 대상을 찾습니다. */
+    @Column(name = "notify_groups", length = 200)
+    private String notifyGroups;
+
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt = LocalDateTime.now();
 }
