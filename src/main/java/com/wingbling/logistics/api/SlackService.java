@@ -109,18 +109,11 @@ public class SlackService {
     // 웹 대시보드 주소. 배포 주소가 바뀌면 이 한 줄만 고치면 됩니다.
     private static final String WEB_DASHBOARD_URL = "https://bm-glitch.github.io/logistics-dashboard/";
 
-    // 요청이 수정·취소되면 DM으로 알림을 받을 물류팀 3명의 Slack 사용자 ID.
-    // (사람이 바뀌면 이 ID만 교체하면 됩니다.) 유다영 / 백화성 / 배영환
-    private static final String[] LOGISTICS_USER_IDS = {
-            "U0B6GNL528P", // 유다영
-            "U0BAC1G04TV", // 백화성
-            "U017EUNG5B2"  // 배영환
-    };
-
-    // 재고 부족 발생 시 CX 확인 요청을 받을 사람 — 이름으로 주소록(staff_slack)에서 찾습니다.
-    // (물류팀 목록과 달리 ID를 직접 박지 않는 이유: 이름 기준이면 그 사람 Slack ID가 나중에
-    //  바뀌어도 주소록만 갱신되면 되고, 여기 코드는 손댈 필요가 없습니다.)
-    private static final String[] CX_TEAM_NAMES = { "이성화" };
+    // 요청이 수정·취소되면 DM으로 알림을 받을 사람, 재고 부족 발생 시 CX 확인 요청을 받을 사람 —
+    // 둘 다 코드에 이름/ID를 박아두지 않고, 주소록(staff_slack)의 notify_groups 태그로 찾습니다.
+    // 담당자가 바뀌면 POST /api/staff-slack/groups 로 태그만 바꾸면 되고, 코드 배포가 필요 없습니다.
+    private static final String GROUP_LOGISTICS = "물류";
+    private static final String GROUP_CX = "CX";
 
     public void handleAppMention(JsonNode event) {
         String channel = text(event, "channel");
@@ -867,12 +860,12 @@ public class SlackService {
         String blocks = "[{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"" + textEscaped + "\"}}]";
         String fallback = "[재고 부족] " + r.getSrNo() + " · " + nz(r.getRequester()) + " — CX 확인 요청";
 
-        for (String name : CX_TEAM_NAMES) {
-            var st = staffDirectory.lookup(name);
-            if (st == null || st.getSlackUserId() == null || st.getSlackUserId().isBlank()) {
-                log.warn("[Slack] CX팀 '{}' 이(가) 주소록에 없어 재고부족 알림을 못 보냅니다 (sr={})", name, r.getSrNo());
-                continue;
-            }
+        var cxTeam = staffDirectory.findByGroup(GROUP_CX);
+        if (cxTeam.isEmpty()) {
+            log.warn("[Slack] 주소록에 'CX' 그룹 태그가 붙은 사람이 없어 재고부족 알림을 못 보냅니다 (sr={})", r.getSrNo());
+        }
+        for (var st : cxTeam) {
+            if (st.getSlackUserId() == null || st.getSlackUserId().isBlank()) continue;
             postMessage(st.getSlackUserId(), null, fallback, blocks);
         }
     }
@@ -902,9 +895,9 @@ public class SlackService {
                 .replace("WHO", esc(who))
                 .replace("WHY", esc(why));
         String fallback = title + " 요청이 " + action + "되었습니다 (변경자: " + who + ")";
-        for (String uid : LOGISTICS_USER_IDS) {
-            if (uid == null || uid.isBlank()) continue;
-            postMessage(uid, null, fallback, blocks);
+        for (var st : staffDirectory.findByGroup(GROUP_LOGISTICS)) {
+            if (st.getSlackUserId() == null || st.getSlackUserId().isBlank()) continue;
+            postMessage(st.getSlackUserId(), null, fallback, blocks);
         }
     }
 
