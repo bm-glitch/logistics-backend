@@ -24,5 +24,7 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*') }}
+      - name: gradlew 실행 권한 부여 (웹에서 편집한 파일이라 실행 권한이 빠져 있을 수 있음)
+        run: chmod +x ./gradlew
       - name: 컴파일만 확인 (테스트 제외 — 배포 빌드와 동일 조건)
         run: ./gradlew clean compileJava -x test -x check --no-daemon
