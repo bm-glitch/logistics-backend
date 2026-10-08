@@ -3,6 +3,7 @@ package com.wingbling.logistics.api;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wingbling.logistics.domain.ShipmentRequest;
+import com.wingbling.logistics.domain.StockWatch;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -865,6 +866,39 @@ public class SlackService {
             log.warn("[Slack] 주소록에 'CX' 그룹 태그가 붙은 사람이 없어 재고부족 알림을 못 보냅니다 (sr={})", r.getSrNo());
         }
         for (var st : cxTeam) {
+            if (st.getSlackUserId() == null || st.getSlackUserId().isBlank()) continue;
+            postMessage(st.getSlackUserId(), null, fallback, blocks);
+        }
+    }
+
+    /**
+     * 안전재고 임계치 미달 알림 — 매일 09:00/14:00 체크(StockAlertJob)에서 기준보다 재고가
+     * 적은 상품이 있으면 물류팀에 보냅니다. 같은 상품을 하루에 여러 번 보내지 않도록
+     * StockWatchService가 이미 걸러서(하루 1회) 넘겨준 목록을 그대로 한 메시지에 모아 보냅니다.
+     */
+    public void notifyStockShortageWatch(List<StockWatch> lowList) {
+        if (lowList == null || lowList.isEmpty()) return;
+
+        StringBuilder body = new StringBuilder();
+        body.append(":rotating_light: *안전재고 임계치 미달 알림*\n\n");
+        for (StockWatch w : lowList) {
+            String name = (w.getProductName() == null || w.getProductName().isBlank())
+                    ? w.getProductCode() : w.getProductName();
+            body.append("*").append(esc(name)).append("* (").append(esc(w.getProductCode())).append(")\n");
+            body.append("현재재고 ").append(w.getLastCheckedQty() == null ? 0 : w.getLastCheckedQty())
+                    .append("개 / 기준 ").append(w.getThresholdQty()).append("개\n\n");
+        }
+        body.append("재고 확보가 필요합니다.");
+
+        String textEscaped = body.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", " ").replace("\n", "\\n");
+        String blocks = "[{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"" + textEscaped + "\"}}]";
+        String fallback = "[안전재고] 임계치 미달 " + lowList.size() + "건";
+
+        var team = staffDirectory.findByGroup(GROUP_LOGISTICS);
+        if (team.isEmpty()) {
+            log.warn("[Slack] 주소록에 '물류' 그룹 태그가 붙은 사람이 없어 안전재고 알림을 못 보냅니다.");
+        }
+        for (var st : team) {
             if (st.getSlackUserId() == null || st.getSlackUserId().isBlank()) continue;
             postMessage(st.getSlackUserId(), null, fallback, blocks);
         }
