@@ -321,6 +321,22 @@ public class ShipmentRequestService {
         return r;
     }
 
+    /**
+     * 수령자 정보만 정정 — 송장 엑셀 매칭 화면에서 "연락처/주소 다름" 경고가 뜬 건을
+     * 그 자리에서 바로 고칠 때 씁니다. null로 넘어온 필드는 건드리지 않습니다.
+     * (전체 수정 화면처럼 모든 항목을 다시 입력받을 필요 없이, 이 3개 필드만 안전하게 바꿉니다)
+     */
+    public ShipmentRequest updateReceiver(String srNo, String name, String phone, String address) {
+        ShipmentRequest r = repo.findBySrNo(srNo)
+                .orElseThrow(() -> new EntityNotFoundException("요청 없음: " + srNo));
+        String before = snapshot(r);
+        if (name != null) r.setReceiverName(name.trim());
+        if (phone != null) r.setReceiverPhone(phone.trim());
+        if (address != null) r.setReceiverAddress(address.trim());
+        logChange(srNo, "정정", "물류", "수령자 정보 정정(송장 매칭 화면)", before, snapshot(r));
+        return r;
+    }
+
     /** 물류팀이 알림을 확인(닫기)했을 때. */
     public ShipmentRequest acknowledgeAlert(String srNo) {
         ShipmentRequest r = repo.findBySrNo(srNo)
@@ -566,4 +582,3 @@ public class ShipmentRequestService {
         return r; // dirty checking으로 커밋 시 자동 저장
     }
 }
-
