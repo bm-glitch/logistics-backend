@@ -408,6 +408,18 @@ public class ShipmentRequestController {
 
     public record MemoDto(String memo) {}
 
+    /**
+     * 수령자 정보만 정정 — "송장 엑셀 일괄 등록" 매칭 화면에서 연락처·주소가 다르다고
+     * 경고가 뜬 건을 그 자리에서 바로 고칠 때 씁니다. 넘기지 않은(null) 필드는 그대로 둡니다.
+     */
+    @PatchMapping("/{sr}/receiver")
+    public LedgerView updateReceiver(@PathVariable String sr, @RequestBody ReceiverDto body) {
+        ShipmentRequest r = service.updateReceiver(sr, body.name(), body.phone(), body.address());
+        return LedgerView.from(r);
+    }
+
+    public record ReceiverDto(String name, String phone, String address) {}
+
     public record StatusUpdateDto(String status) {}
     public record HoldDto(String reason) {}
 }
