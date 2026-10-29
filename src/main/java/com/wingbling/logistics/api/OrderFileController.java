@@ -1,5 +1,8 @@
 package com.wingbling.logistics.api;
 
+import com.wingbling.logistics.domain.UnrecognizedOrderPdf;
+import com.wingbling.logistics.domain.UnrecognizedOrderPdfRepository;
+import lombok.RequiredArgsConstructor;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.slf4j.Logger;
@@ -26,12 +29,19 @@ import java.util.regex.Pattern;
  *
  * 결과는 반드시 사람이 요청서 작성 화면에서 확인한 뒤 평소처럼 "등록" 버튼을 눌러야
  * 실제 요청서가 됩니다 — 여기서는 화면 입력칸을 채워줄 뿐, 등록까지 하지 않습니다.
+ *
+ * 모르는 양식 자동 수집함: 아는 양식이 아니면 실패로 끝내지 않고 PDF 원본 + 추출된
+ * 텍스트를 DB에 쌓아 둡니다. 나중에 "쌓인 거 처리해줘" 한 번이면 이 목록을 조회해서
+ * 몰아서 새 양식 파서를 추가할 수 있습니다.
  */
 @RestController
 @RequestMapping("/api/order-files")
+@RequiredArgsConstructor
 public class OrderFileController {
 
     private static final Logger log = LoggerFactory.getLogger(OrderFileController.class);
+
+    private final UnrecognizedOrderPdfRepository unrecognizedRepo;
 
     // 새 거래처 양식이 생기면 이 목록에 파서를 하나 추가하면 됩니다.
     private final List<OrderPdfTemplate> templates = List.of(new LifestyleProjectTemplate());
@@ -60,8 +70,50 @@ public class OrderFileController {
                 log.error("[PDF발주서] {} 파서 처리 중 오류", t.getClass().getSimpleName(), e);
             }
         }
-        return ParseResult.fail("아직 지원하지 않는 발주서 양식이에요. 직접 입력해 주시거나, 담당자에게 이 양식 추가를 요청해 주세요.");
+
+        // 아는 양식이 아님 — 실패로 끝내지 않고 수집함에 쌓아 둡니다.
+        try {
+            UnrecognizedOrderPdf u = new UnrecognizedOrderPdf();
+            u.setFileName(body.fileName());
+            u.setFileBase64(body.fileBase64().trim());
+            u.setExtractedText(text);
+            unrecognizedRepo.save(u);
+        } catch (Exception e) {
+            log.error("[PDF발주서] 수집함 저장 실패", e);
+        }
+        return ParseResult.fail("아직 지원하지 않는 발주서 양식이에요. 직접 입력해 주셔도 되고, 담당자에게 알려서 이 양식도 지원하도록 할게요(자동으로 기록해 뒀어요).");
     }
+
+    /** "모르는 양식 수집함" 목록 — PDF 원본은 빼고 가볍게 보여줍니다. */
+    @GetMapping("/unrecognized")
+    public List<UnrecognizedSummary> listUnrecognized() {
+        return unrecognizedRepo.findAll(org.springframework.data.domain.Sort.by(
+                        org.springframework.data.domain.Sort.Direction.DESC, "uploadedAt"))
+                .stream()
+                .map(u -> new UnrecognizedSummary(u.getId(), u.getFileName(), u.getUploadedAt(), u.isResolved()))
+                .toList();
+    }
+
+    /** 개발자가 분석할 때 쓰는 상세 — PDF 원본(base64)과 추출된 텍스트를 함께 줍니다. */
+    @GetMapping("/unrecognized/{id}")
+    public UnrecognizedOrderPdf getUnrecognized(@PathVariable Long id) {
+        return unrecognizedRepo.findById(id).orElseThrow();
+    }
+
+    /** 이 양식을 지원하도록 고친 뒤, 더 이상 안 보이게 처리 완료 표시. */
+    @PatchMapping("/unrecognized/{id}/resolve")
+    public UnrecognizedOrderPdf resolveUnrecognized(@PathVariable Long id) {
+        UnrecognizedOrderPdf u = unrecognizedRepo.findById(id).orElseThrow();
+        u.setResolved(true);
+        return unrecognizedRepo.save(u);
+    }
+
+    @DeleteMapping("/unrecognized/{id}")
+    public void deleteUnrecognized(@PathVariable Long id) {
+        unrecognizedRepo.deleteById(id);
+    }
+
+    public record UnrecognizedSummary(Long id, String fileName, java.time.LocalDateTime uploadedAt, boolean resolved) {}
 
     // ------------------------------------------------------------------
     // 거래처별 양식 파서 — 새 양식 추가는 이 인터페이스를 구현해서 templates에 등록
