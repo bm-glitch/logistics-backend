@@ -156,6 +156,69 @@ public class EzAdminService {
     }
 
     // ------------------------------------------------------------------
+    // 재고 이력(입출고 로그) 조회 — A/S 입고 이중체크 화면에서 CS팀이 이지어드민에
+    // 등록한 입고/반품입고 전표를 가져올 때 씁니다.
+    // ------------------------------------------------------------------
+
+    /** 재고 이력 한 줄. job: in(입고)/out(출고)/retin(반품입고)/retout(반품출고)/arrange(조정)/trans(배송처리)/SHOP_REQ(매장출고) */
+    public record StockTxEntry(String seq, String crdate, String productId, String job, int qty,
+                                String owner, String memo, String name, String options,
+                                String barcode, String orderSeq, String sheet, String sheetName) {}
+
+    /**
+     * 기간 내 재고 이력을 전부 받아옵니다(100건 제한을 자동으로 여러 페이지로 나눠 호출).
+     * job을 넘기면 그 작업유형만, null/빈값이면 전체 유형을 받습니다.
+     */
+    public List<StockTxEntry> getStockTxInfo(java.time.LocalDate startDate, java.time.LocalDate endDate, String job) {
+        List<StockTxEntry> out = new ArrayList<>();
+        if (partnerKey == null || partnerKey.isBlank() || domainKey == null || domainKey.isBlank()) {
+            log.error("[EzAdmin] 인증키 미설정 — 재고 이력 조회를 건너뜁니다.");
+            return out;
+        }
+        int page = 1;
+        int limit = 100;
+        for (int i = 0; i < 50; i++) { // 최대 50페이지(=5,000건) 안전장치
+            String query = "action=get_stock_tx_info"
+                    + "&partner_key=" + enc(partnerKey)
+                    + "&domain_key=" + enc(domainKey)
+                    + "&start_date=" + startDate
+                    + "&end_date=" + endDate
+                    + (job == null || job.isBlank() ? "" : "&job=" + enc(job))
+                    + "&page=" + page
+                    + "&limit=" + limit;
+            try {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(BASE_URL + "?" + query))
+                        .timeout(Duration.ofSeconds(20))
+                        .GET().build();
+                HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                JsonNode root = om.readTree(res.body());
+                if (root.path("error").asInt(-1) != 0) {
+                    log.error("[EzAdmin] 재고이력 조회 실패(page {}): {}", page, root.path("msg").asText(""));
+                    break;
+                }
+                JsonNode data = root.path("data");
+                if (!data.isArray() || data.isEmpty()) break;
+                for (JsonNode d : data) {
+                    int qty; try { qty = Integer.parseInt(d.path("qty").asText("0")); } catch (Exception e) { qty = 0; }
+                    out.add(new StockTxEntry(
+                            d.path("seq").asText(""), d.path("crdate").asText(""), d.path("product_id").asText(""),
+                            d.path("job").asText(""), qty, d.path("owner").asText(""), d.path("memo").asText(""),
+                            d.path("name").asText(""), d.path("options").asText(""), d.path("barcode").asText(""),
+                            d.path("order_seq").asText(""), d.path("sheet").asText(""), d.path("sheet_name").asText("")));
+                }
+                if (data.size() < limit) break; // 마지막 페이지
+                page++;
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) {} // 권장 호출 간격 2초
+            } catch (Exception e) {
+                log.error("[EzAdmin] 재고이력 {}페이지 조회 실패 — 여기까지 받은 {}건으로 진행합니다", page, out.size(), e);
+                break;
+            }
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------
     // 상품명/키워드 검색 — 이지어드민은 부분(포함) 검색을 지원하지 않으므로,
     // 전체 상품 목록을 주기적으로 받아와 우리 서버 메모리에 캐싱한 뒤
     // 그 안에서 직접 "포함" 검색을 합니다.
