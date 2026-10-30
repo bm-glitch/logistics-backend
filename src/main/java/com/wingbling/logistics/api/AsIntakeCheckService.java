@@ -15,8 +15,10 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * A/S 입고 이중체크 — CS팀이 이지어드민에 등록한 입고/반품입고 전표를 가져와서,
+ * A/S 입고 이중체크 — CS팀이 이지어드민에 등록한 입고(A/S로 받은 상품) 전표를 가져와서,
  * 물류팀이 실물을 바코드로 스캔해 한 번 더 확인(이중체크)하는 화면의 로직입니다.
+ * (반품입고는 별도의 "반품 입고 확인" 화면에서 다룹니다 — 같은 전표가 두 화면에 겹치지 않도록
+ *  작업유형으로 나눴습니다: 여기는 입고(in)만, 반품은 ReturnIntakeCheckService가 담당합니다.)
  *
  * 배경: CS팀이 A/S로 받은 상품을 이지어드민에 입고 등록만 하고 물류팀에 실물을 넘기는데,
  * 서로 대조할 서류가 없어서 가끔 전산엔 있는데 실물이 없는(분실) 사고가 뒤늦게 발견됩니다.
@@ -31,13 +33,13 @@ public class AsIntakeCheckService {
 
     // 물류팀 자신의 작업은 이미 본인이 확인한 것이므로 이중체크 대상에서 뺍니다.
     private static final Set<String> EXCLUDED_OWNERS = Set.of("백화성", "유다영", "배영환");
-    private static final Set<String> TARGET_JOBS = Set.of("in", "retin");
+    private static final Set<String> TARGET_JOBS = Set.of("in");
 
     private final AsIntakeCheckRepository repo;
     private final EzAdminService ezAdminService;
 
     /**
-     * 이지어드민에서 지정한 기간(보름~한달 등, 화면에서 직접 고름)의 입고/반품입고 이력을
+     * 이지어드민에서 지정한 기간(보름~한달 등, 화면에서 직접 고름)의 입고 이력을
      * 받아와 새로 나타난 것만 추가합니다. 이미 가지고 있는 건(ezadminSeq 기준)은
      * 체크 상태를 그대로 보존합니다.
      */
@@ -45,7 +47,6 @@ public class AsIntakeCheckService {
     public int syncFromEzAdmin(LocalDate start, LocalDate end) {
         List<EzAdminService.StockTxEntry> entries = new ArrayList<>();
         entries.addAll(ezAdminService.getStockTxInfo(start, end, "in"));
-        entries.addAll(ezAdminService.getStockTxInfo(start, end, "retin"));
 
         int added = 0;
         for (var e : entries) {
